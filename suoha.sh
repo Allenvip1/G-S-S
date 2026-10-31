@@ -38,6 +38,153 @@ then
     fi
 fi
 
+function generate_sub_links(){
+    local node_tls="$1"
+    local node_notls="$2"
+    local node_name="$3"
+    local protocol_type="$4"
+    local connect_addr="$5"
+    local host_sni="$6"
+    local path_val="$7"
+    local pwd_or_uuid="$8"
+    local out_dir="$9"
+
+    # 生成节点链接文件 nodes.txt
+    cat>${out_dir}/nodes.txt<<EOF
+$node_tls
+$node_notls
+EOF
+
+    # 生成 Base64 订阅内容
+    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+    then
+        base64 ${out_dir}/nodes.txt | tr -d '\n' > ${out_dir}/sub.txt
+    else
+        base64 -w 0 ${out_dir}/nodes.txt > ${out_dir}/sub.txt
+    fi
+
+    # 上传 Base64 订阅生成远程托管链接 (dpaste 有效期 7 天，免注册 API)
+    local sub_online_url=""
+    sub_online_url=$(curl -s -X POST -F "content=<${out_dir}/sub.txt" -F "expiry_days=7" https://dpaste.com/api/v2/ 2>/dev/null)
+    if [ -n "$sub_online_url" ]; then
+        sub_online_url="${sub_online_url}.txt"
+    fi
+
+    # 生成 Clash/Mihomo 配置文件
+    if [ "$protocol_type" == "vless" ]; then
+cat>${out_dir}/clash.yaml<<EOF
+port: 7890
+socks-port: 7891
+allow-lan: false
+mode: rule
+log-level: info
+proxies:
+  - name: "${node_name}_TLS"
+    type: vless
+    server: ${connect_addr}
+    port: 443
+    uuid: ${pwd_or_uuid}
+    cipher: auto
+    tls: true
+    udp: true
+    servername: ${host_sni}
+    network: ws
+    ws-opts:
+      path: /${path_val}
+      headers:
+        Host: ${host_sni}
+  - name: "${node_name}_80"
+    type: vless
+    server: ${connect_addr}
+    port: 80
+    uuid: ${pwd_or_uuid}
+    cipher: auto
+    tls: false
+    udp: true
+    network: ws
+    ws-opts:
+      path: /${path_val}
+      headers:
+        Host: ${host_sni}
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - "${node_name}_TLS"
+      - "${node_name}_80"
+rules:
+  - MATCH,PROXY
+EOF
+    elif [ "$protocol_type" == "trojan" ]; then
+cat>${out_dir}/clash.yaml<<EOF
+port: 7890
+socks-port: 7891
+allow-lan: false
+mode: rule
+log-level: info
+proxies:
+  - name: "${node_name}_TLS"
+    type: trojan
+    server: ${connect_addr}
+    port: 443
+    password: ${pwd_or_uuid}
+    udp: true
+    sni: ${host_sni}
+    network: ws
+    ws-opts:
+      path: /${path_val}
+      headers:
+        Host: ${host_sni}
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - "${node_name}_TLS"
+rules:
+  - MATCH,PROXY
+EOF
+    fi
+
+    # 上传 Clash 配置文件
+    local clash_online_url=""
+    clash_online_url=$(curl -s -X POST -F "content=<${out_dir}/clash.yaml" -F "expiry_days=7" https://dpaste.com/api/v2/ 2>/dev/null)
+    if [ -n "$clash_online_url" ]; then
+        clash_online_url="${clash_online_url}.txt"
+    fi
+
+    # 汇总输出到 v2ray.txt
+    cat>${out_dir}/v2ray.txt<<EOF
+======================== 节点连接信息 ========================
+TLS 节点:
+$node_tls
+
+非 TLS (80端口) 节点:
+$node_notls
+
+端口说明:
+443 端口可替换为: 2053, 2083, 2087, 2096, 8443
+80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
+
+======================== 客户端订阅及导入链接 ========================
+1. 通用在线订阅链接 (适用于 v2rayN / NekoBox / Shadowrocket):
+$sub_online_url
+
+2. v2rayN / NekoBox 一键导入协议链接:
+sub://$sub_online_url
+
+3. Clash / Clash.Meta / Mihomo 一键导入配置:
+clash://install-config?url=${clash_online_url}
+Clash 在线托管直链:
+$clash_online_url
+
+本地订阅文件路径:
+- 节点列表: ${out_dir}/nodes.txt
+- Base64 订阅: ${out_dir}/sub.txt
+- Clash 配置: ${out_dir}/clash.yaml
+==============================================================
+EOF
+}
+
 function quicktunnel(){
 rm -rf xray cloudflared-linux xray.zip
 case "$(uname -m)" in
@@ -182,27 +329,25 @@ else
     connect_address="$best_domain"
 fi
 
+local_isp=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
+
 if [ $protocol == 1 ]
 then
-    echo -e "vless链接已经生成, 连接地址为: $connect_address, SNI为: $argo\n" > v2ray.txt
-    echo 'vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >> v2ray.txt
-    echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >> v2ray.txt
-    echo 'vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >> v2ray.txt
-    echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095 >> v2ray.txt
+    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}'_tls'
+    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}
+    generate_sub_links "$node_tls" "$node_notls" "$isp" "vless" "$connect_address" "$argo" "$urlpath" "$uuid" "."
 fi
 
 if [ $protocol == 2 ]
 then
-    echo -e "trojan链接已经生成, 连接地址为: $connect_address, SNI为: $argo\n" > v2ray.txt
-    echo 'trojan://'$uuid'@'$connect_address':443?security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >> v2ray.txt
-    echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >> v2ray.txt
-    echo 'trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >> v2ray.txt
-    echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095 >> v2ray.txt
+    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}'_tls'
+    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}
+    generate_sub_links "$node_tls" "$node_notls" "$isp" "trojan" "$connect_address" "$argo" "$urlpath" "$uuid" "."
 fi
 
 rm -rf argo.log
 cat v2ray.txt
-echo -e '\n'信息已经保存在 v2ray.txt,再次查看请运行 cat v2ray.txt
+echo -e '\n信息已经保存在 v2ray.txt,再次查看请运行 cat v2ray.txt'
 }
 
 function installtunnel(){
@@ -365,28 +510,20 @@ else
     connect_address="$best_domain"
 fi
 
+local_isp=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
+
 if [ $protocol == 1 ]
 then
-    echo -e "vless链接已经生成, 连接地址为: $connect_address, SNI为: $domain\n" >/opt/suoha/v2ray.txt
-    echo 'vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >>/opt/suoha/v2ray.txt
-    echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >>/opt/suoha/v2ray.txt
-    echo 'vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >>/opt/suoha/v2ray.txt
-    echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095'\n' >>/opt/suoha/v2ray.txt
-    echo 注意:如果 80 8080 8880 2052 2082 2086 2095 端口无法正常使用 >>/opt/suoha/v2ray.txt
-    echo 请前往 https://dash.cloudflare.com/ >>/opt/suoha/v2ray.txt
-    echo 检查管理面板 SSL/TLS - 边缘证书 - 始终使用HTTPS 是否处于关闭状态 >>/opt/suoha/v2ray.txt
+    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}'_tls'
+    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}
+    generate_sub_links "$node_tls" "$node_notls" "$isp" "vless" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
 fi
 
 if [ $protocol == 2 ]
 then
-    echo -e "trojan链接已经生成, 连接地址为: $connect_address, SNI为: $domain\n" >/opt/suoha/v2ray.txt
-    echo 'trojan://'$uuid'@'$connect_address':443?security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >>/opt/suoha/v2ray.txt
-    echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >>/opt/suoha/v2ray.txt
-    echo 'trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >>/opt/suoha/v2ray.txt
-    echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095'\n' >>/opt/suoha/v2ray.txt
-    echo 注意:如果 80 8080 8880 2052 2082 2086 2095 端口无法正常使用 >>/opt/suoha/v2ray.txt
-    echo 请前往 https://dash.cloudflare.com/ >>/opt/suoha/v2ray.txt
-    echo 检查管理面板 SSL/TLS - 边缘证书 - 始终使用HTTPS 是否处于关闭状态 >>/opt/suoha/v2ray.txt
+    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}'_tls'
+    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}
+    generate_sub_links "$node_tls" "$node_notls" "$isp" "trojan" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
 fi
 
 rm -rf argo.log
@@ -472,7 +609,7 @@ echo 2.启动服务
 echo 3.停止服务
 echo 4.重启服务
 echo 5.卸载服务
-echo 6.查看当前v2ray链接
+echo 6.查看当前订阅与节点链接
 echo 0.退出
 read -p "请选择菜单(默认0): " menu
 if [ -z "\$menu" ]
@@ -560,7 +697,7 @@ echo 2.启动服务
 echo 3.停止服务
 echo 4.重启服务
 echo 5.卸载服务
-echo 6.查看当前v2ray链接
+echo 6.查看当前订阅与节点链接
 echo 0.退出
 read -p "请选择菜单(默认0): " menu
 if [ -z "\$menu" ]
@@ -717,7 +854,7 @@ then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
     fi
-    rm -rf xray cloudflared-linux v2ray.txt
+    rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml
     quicktunnel
 elif [ $mode == 2 ]
 then
@@ -821,7 +958,7 @@ then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
     fi
-    rm -rf xray cloudflared-linux v2ray.txt
+    rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml
 else
     echo 退出成功
     exit
