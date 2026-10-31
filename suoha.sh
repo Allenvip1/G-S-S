@@ -110,15 +110,15 @@ uuid=$(cat /proc/sys/kernel/random/uuid)
 urlpath_vless="vl-$(echo $uuid | awk -F- '{print $1}')"
 urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
 
-port_main=$[$RANDOM+10000]
-port_trojan=$[$port_main+1]
+port_vless=$[$RANDOM+10000]
+port_trojan=$[$port_vless+1]
 
-# Xray 配置：主端口接收 cloudflared 流量，VLESS 在主端口提供 WS 服务，trojan 路径 fallback 到 Trojan 端口
+# 核心方案：VLESS 与 Trojan 各自拥有原生 WS 监听端口，通过两个独立的 cloudflared 实例同时拉起两条免费隧道，互不干扰
 cat>xray/config.json<<EOF
 {
     "inbounds": [
         {
-            "port": $port_main,
+            "port": $port_vless,
             "listen": "127.0.0.1",
             "protocol": "vless",
             "settings": {
@@ -126,12 +126,6 @@ cat>xray/config.json<<EOF
                 "clients": [
                     {
                         "id": "$uuid"
-                    }
-                ],
-                "fallbacks": [
-                    {
-                        "path": "/$urlpath_trojan",
-                        "dest": $port_trojan
                     }
                 ]
             },
@@ -172,7 +166,9 @@ EOF
 
 ./xray/xray run>/dev/null 2>&1 &
 
-./cloudflared-linux tunnel --url http://127.0.0.1:$port_main --no-autoupdate --edge-ip-version $ips --protocol http2 >argo.log 2>&1 &
+# 分别拉起两个独立的 Quick Tunnel，彻底解决分流握手断开问题
+./cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
+./cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
 sleep 2
 
 n=0
@@ -180,8 +176,10 @@ while true
 do
 n=$[$n+1]
 clear
-echo "等待 cloudflare argo 生成地址，已等待 $n 秒..."
-argo=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" argo.log | head -n 1 | awk -F// '{print $2}')
+echo "等待 cloudflare argo 生成双协议专属地址，已等待 $n 秒..."
+argo_vl=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" argo_vless.log | head -n 1 | awk -F// '{print $2}')
+argo_tr=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" argo_trojan.log | head -n 1 | awk -F// '{print $2}')
+
 if [ $n == 20 ]
 then
     n=0
@@ -191,16 +189,17 @@ then
     else
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
     fi
-    rm -rf argo.log
+    rm -rf argo_vless.log argo_trojan.log
     clear
-    echo "argo获取超时，正在重新尝试连接..."
-    ./cloudflared-linux tunnel --url http://127.0.0.1:$port_main --no-autoupdate --edge-ip-version $ips --protocol http2 >argo.log 2>&1 &
+    echo "argo 获取超时，正在重新尝试建立双隧道..."
+    ./cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
+    ./cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
     sleep 2
-elif [ -z "$argo" ]
+elif [[ -z "$argo_vl" || -z "$argo_tr" ]]
 then
     sleep 1
 else
-    rm -rf argo.log
+    rm -rf argo_vless.log argo_trojan.log
     break
 fi
 done
@@ -211,8 +210,8 @@ if [[ -z "$node_tag" || "$node_tag" == "--" ]]; then
     node_tag="Argo_Node"
 fi
 
-domains=("$argo" "cf.090227.xyz" "cloudflare.182682.xyz")
-labels=("默认Argo" "优选cf.090227" "优选182682")
+opt_domains=("cf.090227.xyz" "cloudflare.182682.xyz")
+opt_labels=("优选cf.090227" "优选182682")
 
 > nodes.txt
 
@@ -227,12 +226,15 @@ EOF
 
 proxy_names=()
 
-for idx in "${!domains[@]}"; do
-    d="${domains[$idx]}"
-    l="${labels[$idx]}"
+# 1. 生成 VLESS 节点列表 (默认 Argo + 2组优选)
+vless_domains=("$argo_vl" "${opt_domains[@]}")
+vless_labels=("默认Argo" "${opt_labels[@]}")
 
-    # VLESS TLS (443) 节点
-    vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
+for idx in "${!vless_domains[@]}"; do
+    d="${vless_domains[$idx]}"
+    l="${vless_labels[$idx]}"
+
+    vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_vl}&type=ws&host=${argo_vl}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
     echo "$vless_tls" >> nodes.txt
     proxy_names+=("${node_tag}-VLESS-${l}-443")
     cat>>clash.yaml<<EOF
@@ -244,16 +246,24 @@ for idx in "${!domains[@]}"; do
     cipher: auto
     tls: true
     udp: true
-    servername: ${argo}
+    servername: ${argo_vl}
     network: ws
     ws-opts:
       path: /${urlpath_vless}
       headers:
-        Host: ${argo}
+        Host: ${argo_vl}
 EOF
+done
 
-    # Trojan TLS (443) 节点
-    trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
+# 2. 生成 Trojan 节点列表 (默认 Argo + 2组优选)
+trojan_domains=("$argo_tr" "${opt_domains[@]}")
+trojan_labels=("默认Argo" "${opt_labels[@]}")
+
+for idx in "${!trojan_domains[@]}"; do
+    d="${trojan_domains[$idx]}"
+    l="${trojan_labels[$idx]}"
+
+    trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${argo_tr}&type=ws&host=${argo_tr}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
     echo "$trojan_tls" >> nodes.txt
     proxy_names+=("${node_tag}-Trojan-${l}-443")
     cat>>clash.yaml<<EOF
@@ -263,12 +273,12 @@ EOF
     port: 443
     password: ${uuid}
     udp: true
-    sni: ${argo}
+    sni: ${argo_tr}
     network: ws
     ws-opts:
       path: /${urlpath_trojan}
       headers:
-        Host: ${argo}
+        Host: ${argo_tr}
 EOF
 done
 
@@ -297,7 +307,7 @@ fi
 
 server_ip=$(get_server_ip)
 if [ -z "$server_ip" ]; then
-    server_ip="$argo"
+    server_ip="$argo_vl"
 fi
 
 sub_port=$[$RANDOM%10000+25000]
@@ -376,14 +386,14 @@ rm -rf xray xray.zip
 uuid=$(cat /proc/sys/kernel/random/uuid)
 urlpath_vless="vl-$(echo $uuid | awk -F- '{print $1}')"
 urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
-port_main=$[$RANDOM+10000]
-port_trojan=$[$port_main+1]
+port_vless=$[$RANDOM+10000]
+port_trojan=$[$port_vless+1]
 
 cat>/opt/suoha/config.json<<EOF
 {
     "inbounds": [
         {
-            "port": $port_main,
+            "port": $port_vless,
             "listen": "127.0.0.1",
             "protocol": "vless",
             "settings": {
@@ -391,12 +401,6 @@ cat>/opt/suoha/config.json<<EOF
                 "clients": [
                     {
                         "id": "$uuid"
-                    }
-                ],
-                "fallbacks": [
-                    {
-                        "path": "/$urlpath_trojan",
-                        "dest": $port_trojan
                     }
                 ]
             },
@@ -611,13 +615,18 @@ EOF
 
 rm -rf argo.log
 
+# 在指定域名 Named Tunnel 模式下，可以直接在 ingress 中配置路径分流给各自原生端口
 cat>/opt/suoha/config.yaml<<EOF
 tunnel: $tunneluuid
 credentials-file: /root/.cloudflared/$tunneluuid.json
 
 ingress:
   - hostname: $domain
-    service: http://127.0.0.1:$port_main
+    path: /$urlpath_vless
+    service: http://127.0.0.1:$port_vless
+  - hostname: $domain
+    path: /$urlpath_trojan
+    service: http://127.0.0.1:$port_trojan
   - service: http_status:404
 EOF
 
