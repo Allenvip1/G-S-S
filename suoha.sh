@@ -111,7 +111,6 @@ urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
 port_vless=$[$RANDOM+10000]
 port_trojan=$[$port_vless+1]
 
-# 同时创建 VLESS 与 Trojan 双 inbound
 cat>xray/config.json<<EOF
 {
     "inbounds": [
@@ -164,7 +163,6 @@ EOF
 
 ./xray/xray run>/dev/null 2>&1 &
 
-# cloudflared 路径分流规则
 cat>quick_tunnel.yaml<<EOF
 ingress:
   - path: /$urlpath_vless
@@ -236,7 +234,6 @@ for idx in "${!domains[@]}"; do
     d="${domains[$idx]}"
     l="${labels[$idx]}"
 
-    # VLESS TLS 节点
     vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
     echo "$vless_tls" >> nodes.txt
     proxy_names+=("${node_tag}-VLESS-${l}-443")
@@ -257,7 +254,6 @@ for idx in "${!domains[@]}"; do
         Host: ${argo}
 EOF
 
-    # VLESS 80 节点
     vless_80="vless://${uuid}@${d}:80?encryption=none&security=none&type=ws&host=${argo}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-80"
     echo "$vless_80" >> nodes.txt
     proxy_names+=("${node_tag}-VLESS-${l}-80")
@@ -277,7 +273,6 @@ EOF
         Host: ${argo}
 EOF
 
-    # Trojan TLS 节点
     trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
     echo "$trojan_tls" >> nodes.txt
     proxy_names+=("${node_tag}-Trojan-${l}-443")
@@ -296,7 +291,6 @@ EOF
         Host: ${argo}
 EOF
 
-    # Trojan 80 节点
     trojan_80="trojan://${uuid}@${d}:80?security=none&type=ws&host=${argo}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-80"
     echo "$trojan_80" >> nodes.txt
     proxy_names+=("${node_tag}-Trojan-${l}-80")
@@ -473,50 +467,50 @@ cat>/opt/suoha/config.json<<EOF
 EOF
 
 clear
-echo 复制下面的链接,用浏览器打开并授权需要绑定的域名
-echo 在网页中授权完毕后会继续进行下一步设置
+echo "复制下面的链接,用浏览器打开并授权需要绑定的域名"
+echo "在网页中授权完毕后会继续进行下一步设置"
 /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel login
 clear
 /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel list >argo.log 2>&1
-echo -e ARGO TUNNEL当前已经绑定的服务如下'\n'
+echo -e "ARGO TUNNEL当前已经绑定的服务如下\n"
 sed 1,2d argo.log | awk '{print $2}'
-echo -e '\n'自定义一个完整二级域名,例如 xxx.example.com
-echo 必须是网页里面绑定授权的域名才生效,不能乱输入
+echo -e "\n自定义一个完整二级域名,例如 xxx.example.com"
+echo "必须是网页里面绑定授权的域名才生效,不能乱输入"
 read -p "输入绑定域名的完整二级域名: " domain
 if [ -z "$domain" ]
 then
-    echo 没有设置域名
+    echo "没有设置域名"
     exit
 elif [ $(echo $domain | grep "\." | wc -l) == 0 ]
 then
-    echo 域名格式不正确
+    echo "域名格式不正确"
     exit
 fi
 name=$(echo $domain | awk -F\. '{print $1}')
 if [ $(sed 1,2d argo.log | awk '{print $2}' | grep -w $name | wc -l) == 0 ]
 then
-    echo 创建TUNNEL $name
+    echo "创建TUNNEL $name"
     /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel create $name >argo.log 2>&1
-    echo TUNNEL $name 创建成功
+    echo "TUNNEL $name 创建成功"
 else
-    echo TUNNEL $name 已经存在
+    echo "TUNNEL $name 已经存在"
     if [ ! -f "/root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json" ]
     then
-        echo /root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json 文件不存在
-        echo 清理TUNNEL $name
+        echo "/root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json 文件不存在"
+        echo "清理TUNNEL $name"
         /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel cleanup $name >argo.log 2>&1
-        echo 删除TUNNEL $name
+        echo "删除TUNNEL $name"
         /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel delete $name >argo.log 2>&1
-        echo 重建TUNNEL $name
+        echo "重建TUNNEL $name"
         /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel create $name >argo.log 2>&1
     else
-        echo 清理TUNNEL $name
+        echo "清理TUNNEL $name"
         /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel cleanup $name >argo.log 2>&1
     fi
 fi
-echo 绑定 TUNNEL $name 到域名 $domain
+echo "绑定 TUNNEL $name 到域名 $domain"
 /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel route dns --overwrite-dns $name $domain >argo.log 2>&1
-echo $domain 绑定成功
+echo "$domain 绑定成功"
 tunneluuid=$(cut -d= -f2 argo.log)
 
 node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
@@ -943,19 +937,19 @@ ln -sf /opt/suoha/suoha.sh /usr/bin/suoha
 }
 
 clear
-echo 梭哈模式不需要自己提供域名,使用CF ARGO QUICK TUNNEL创建快速链接
-echo 梭哈模式在重启或者脚本再次运行后失效,如果需要使用需要再次运行创建
-echo 安装服务模式,需要有CF托管域名,并且需要按照提示手动绑定ARGO服务
-echo 首次绑定ARGO服务后如果不想再次跳转网页绑定
-echo 将已经绑定的系统目录下的 /root/.cloudflared 文件夹以及内容
-echo 拷贝至新系统下同样的目录,会自动跳过登录验证
+echo "梭哈模式不需要自己提供域名,使用CF ARGO QUICK TUNNEL创建快速链接"
+echo "梭哈模式在重启或者脚本再次运行后失效,如果需要使用需要再次运行创建"
+echo "安装服务模式,需要有CF托管域名,并且需要按照提示手动绑定ARGO服务"
+echo "首次绑定ARGO服务后如果不想再次跳转网页绑定"
+echo "将已经绑定的系统目录下的 /root/.cloudflared 文件夹以及内容"
+echo "拷贝至新系统下同样的目录,会自动跳过登录验证"
 
-echo -e '\n'梭哈是一种智慧!!!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈...'\n'
-echo 1.梭哈模式 (自动生成 VLESS+Trojan 及所有优选节点)
-echo 2.安装服务 (自定义域名绑定固定隧道)
-echo 3.卸载服务
-echo 4.清空缓存
-echo -e 0.退出脚本'\n'
+echo -e "\n梭哈是一种智慧!!!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈...\n"
+echo "1.梭哈模式 (自动生成 VLESS+Trojan 及所有优选节点)"
+echo "2.安装服务 (自定义域名绑定固定隧道)"
+echo "3.卸载服务"
+echo "4.清空缓存"
+echo -e "0.退出脚本\n"
 read -p "请选择模式(默认1):" mode
 if [ -z "$mode" ]
 then
@@ -970,7 +964,7 @@ then
     fi
     if [ $ips != 4 ] && [ $ips != 6 ]
     then
-        echo 请输入正确的argo连接模式
+        echo "请输入正确的argo连接模式"
         exit
     fi
     isp=$(curl -$ips -s --connect-timeout 2 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
@@ -993,7 +987,7 @@ then
     fi
     if [ $ips != 4 ] && [ $ips != 6 ]
     then
-        echo 请输入正确的argo连接模式
+        echo "请输入正确的argo连接模式"
         exit
     fi
     isp=$(curl -$ips -s --connect-timeout 2 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
@@ -1014,7 +1008,7 @@ then
     fi
     installtunnel
     cat /opt/suoha/v2ray.txt
-    echo 服务安装完成,管理服务请运行命令 suoha
+    echo "服务安装完成,管理服务请运行命令 suoha"
 elif [ $mode == 3 ]
 then
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
@@ -1035,10 +1029,10 @@ then
         systemctl --system daemon-reload
     fi
     clear
-    echo 所有服务都卸载完成
-    echo 彻底删除授权记录
-    echo 请访问 https://dash.cloudflare.com/profile/api-tokens
-    echo 删除授权的 Argo Tunnel API Token 即可
+    echo "所有服务都卸载完成"
+    echo "彻底删除授权记录"
+    echo "请访问 https://dash.cloudflare.com/profile/api-tokens"
+    echo "删除授权的 Argo Tunnel API Token 即可"
 elif [ $mode == 4 ]
 then
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
@@ -1052,6 +1046,6 @@ then
     pkill -f "http.server" >/dev/null 2>&1
     rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml quick_tunnel.yaml
 else
-    echo 退出成功
+    echo "退出成功"
     exit
 fi
