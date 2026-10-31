@@ -4,6 +4,16 @@
 
 ---
 
+## 致谢与致敬 (Acknowledgments)
+
+本项目基于开源社区优秀成果二次开发与重构，在此特别鸣谢：
+
+* **原版梭哈脚本**：感谢 [jwfst5088/suoha.sh](https://github.com/jwfst5088/suoha.sh) 开拓性的灵感启发与基础实现，经典梭哈模式为轻量化 Argo 部署奠定了极简实用的体验基础。
+* **Cloudflare 优选节点提供方**：感谢社区与站长们无私维护并分享的高质量 Cloudflare 优选 CDN 域名（如 `cf.090227.xyz`、`cloudflare.182682.xyz` 等），极大改善了国内到 Cloudflare 边缘网络的延迟与连接质量。
+* **XTLS 与 Cloudflare**：感谢 [XTLS/Xray-core](https://github.com/XTLS/Xray-core) 与 [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) 提供的底层开源技术支持。
+
+---
+
 ## 核心特性
 
 * **多系统支持**：原生适配 Debian、Ubuntu、CentOS、Fedora 及 Alpine Linux。
