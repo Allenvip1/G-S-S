@@ -45,22 +45,16 @@ fi
 
 function get_server_ip(){
     local ip=""
-    # 1. 尝试直接从本地网络接口取默认路由IP
     ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
-    
-    # 2. 如果是内网保留地址或为空，通过 Cloudflare 自身 trace 接口高速获取
     if [[ -z "$ip" || "$ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.) ]]; then
         ip=$(curl -s4 --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F= '/ip/{print $2}')
     fi
-    # 3. 备选接口 icanhazip
     if [ -z "$ip" ]; then
         ip=$(curl -s4 --connect-timeout 2 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\n\r ')
     fi
-    # 4. 备选接口 ip.sb
     if [ -z "$ip" ]; then
         ip=$(curl -s4 --connect-timeout 2 https://api.ip.sb/ip 2>/dev/null | tr -d '\n\r ')
     fi
-    # 5. IPv6 备选
     if [ -z "$ip" ]; then
         ip=$(curl -s6 --connect-timeout 2 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
     fi
@@ -80,161 +74,6 @@ function start_sub_server(){
         cd "$web_dir" && nohup python -m SimpleHTTPServer $port >/dev/null 2>&1 &
         cd - >/dev/null 2>&1
     fi
-}
-
-function generate_sub_links(){
-    local node_tls="$1"
-    local node_notls="$2"
-    local node_name="$3"
-    local protocol_type="$4"
-    local connect_addr="$5"
-    local host_sni="$6"
-    local path_val="$7"
-    local pwd_or_uuid="$8"
-    local out_dir="$9"
-
-    # 生成基础节点文件
-    cat>${out_dir}/nodes.txt<<EOF
-$node_tls
-$node_notls
-EOF
-
-    # 生成 Base64
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        base64 ${out_dir}/nodes.txt | tr -d '\n' > ${out_dir}/sub.txt
-    else
-        base64 -w 0 ${out_dir}/nodes.txt > ${out_dir}/sub.txt
-    fi
-
-    # 生成 Clash 配置
-    if [ "$protocol_type" == "vless" ]; then
-cat>${out_dir}/clash.yaml<<EOF
-port: 7890
-socks-port: 7891
-allow-lan: false
-mode: rule
-log-level: info
-proxies:
-  - name: "${node_name}_TLS"
-    type: vless
-    server: ${connect_addr}
-    port: 443
-    uuid: ${pwd_or_uuid}
-    cipher: auto
-    tls: true
-    udp: true
-    servername: ${host_sni}
-    network: ws
-    ws-opts:
-      path: /${path_val}
-      headers:
-        Host: ${host_sni}
-  - name: "${node_name}_80"
-    type: vless
-    server: ${connect_addr}
-    port: 80
-    uuid: ${pwd_or_uuid}
-    cipher: auto
-    tls: false
-    udp: true
-    network: ws
-    ws-opts:
-      path: /${path_val}
-      headers:
-        Host: ${host_sni}
-proxy-groups:
-  - name: PROXY
-    type: select
-    proxies:
-      - "${node_name}_TLS"
-      - "${node_name}_80"
-rules:
-  - MATCH,PROXY
-EOF
-    elif [ "$protocol_type" == "trojan" ]; then
-cat>${out_dir}/clash.yaml<<EOF
-port: 7890
-socks-port: 7891
-allow-lan: false
-mode: rule
-log-level: info
-proxies:
-  - name: "${node_name}_TLS"
-    type: trojan
-    server: ${connect_addr}
-    port: 443
-    password: ${pwd_or_uuid}
-    udp: true
-    sni: ${host_sni}
-    network: ws
-    ws-opts:
-      path: /${path_val}
-      headers:
-        Host: ${host_sni}
-proxy-groups:
-  - name: PROXY
-    type: select
-    proxies:
-      - "${node_name}_TLS"
-rules:
-  - MATCH,PROXY
-EOF
-    fi
-
-    # 获取服务器真实 IP
-    local server_ip
-    server_ip=$(get_server_ip)
-    
-    # 兜底：如果完全拿不到IP，使用 argo 域名作为访问 host
-    if [ -z "$server_ip" ]; then
-        server_ip="$host_sni"
-    fi
-
-    # 随机分配静态服务端口 (25000-35000)
-    local sub_port=$[$RANDOM%10000+25000]
-
-    local abs_out_dir
-    abs_out_dir=$(cd "$out_dir" && pwd)
-    start_sub_server "$abs_out_dir" "$sub_port"
-
-    local sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
-    local clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
-
-    # 汇总写入 v2ray.txt
-    cat>${out_dir}/v2ray.txt<<EOF
-======================== 节点连接信息 ========================
-TLS 节点:
-$node_tls
-
-非 TLS (80端口) 节点:
-$node_notls
-
-端口说明:
-443 端口可替换为: 2053, 2083, 2087, 2096, 8443
-80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
-
-======================== 客户端订阅及导入链接 ========================
-本机订阅服务运行在: ${server_ip}:${sub_port}
-
-1. 通用在线订阅链接 (适用于 v2rayN / NekoBox / Shadowrocket):
-${sub_online_url}
-
-2. v2rayN / NekoBox 一键导入协议链接:
-sub://${sub_online_url}
-
-3. Clash / Clash.Meta / Mihomo 一键导入配置:
-clash://install-config?url=${clash_online_url}
-
-4. Clash 在线配置文件直链:
-${clash_online_url}
-
-本地文件路径:
-- 节点列表: ${abs_out_dir}/nodes.txt
-- Base64 订阅: ${abs_out_dir}/sub.txt
-- Clash 配置: ${abs_out_dir}/clash.yaml
-==============================================================
-EOF
 }
 
 function quicktunnel(){
@@ -267,17 +106,17 @@ unzip -d xray xray.zip
 chmod +x cloudflared-linux xray/xray
 rm -rf xray.zip
 uuid=$(cat /proc/sys/kernel/random/uuid)
-urlpath=$(echo $uuid | awk -F- '{print $1}')
-port=$[$RANDOM+10000]
+urlpath_vless="vl-$(echo $uuid | awk -F- '{print $1}')"
+urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
+port_vless=$[$RANDOM+10000]
+port_trojan=$[$port_vless+1]
 
-# 1: vless, 2: trojan
-if [ $protocol == 1 ]
-then
+# 同时创建 VLESS 与 Trojan 双 inbound
 cat>xray/config.json<<EOF
 {
     "inbounds": [
         {
-            "port": $port,
+            "port": $port_vless,
             "listen": "localhost",
             "protocol": "vless",
             "settings": {
@@ -291,28 +130,12 @@ cat>xray/config.json<<EOF
             "streamSettings": {
                 "network": "ws",
                 "wsSettings": {
-                    "path": "/$urlpath"
+                    "path": "/$urlpath_vless"
                 }
             }
-        }
-    ],
-    "outbounds": [
+        },
         {
-            "protocol": "freedom",
-            "settings": {}
-        }
-    ]
-}
-EOF
-fi
-
-if [ $protocol == 2 ]
-then
-cat>xray/config.json<<EOF
-{
-    "inbounds": [
-        {
-            "port": $port,
+            "port": $port_trojan,
             "listen": "localhost",
             "protocol": "trojan",
             "settings": {
@@ -325,7 +148,7 @@ cat>xray/config.json<<EOF
             "streamSettings": {
                 "network": "ws",
                 "wsSettings": {
-                    "path": "/$urlpath"
+                    "path": "/$urlpath_trojan"
                 }
             }
         }
@@ -338,10 +161,20 @@ cat>xray/config.json<<EOF
     ]
 }
 EOF
-fi
 
 ./xray/xray run>/dev/null 2>&1 &
-./cloudflared-linux tunnel --url http://localhost:$port --no-autoupdate --edge-ip-version $ips --protocol http2 >argo.log 2>&1 &
+
+# cloudflared 路径分流规则
+cat>quick_tunnel.yaml<<EOF
+ingress:
+  - path: /$urlpath_vless
+    service: http://localhost:$port_vless
+  - path: /$urlpath_trojan
+    service: http://localhost:$port_trojan
+  - service: http_status:404
+EOF
+
+./cloudflared-linux tunnel --config quick_tunnel.yaml --no-autoupdate --edge-ip-version $ips --protocol http2 run >argo.log 2>&1 &
 sleep 1
 n=0
 while true
@@ -350,6 +183,10 @@ n=$[$n+1]
 clear
 echo 等待cloudflare argo生成地址 已等待 $n 秒
 argo=$(cat argo.log | grep trycloudflare.com | awk 'NR==2{print}' | awk -F// '{print $2}' | awk '{print $1}')
+if [ -z "$argo" ]; then
+    argo=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" argo.log | head -n 1 | awk -F// '{print $2}')
+fi
+
 if [ $n == 15 ]
 then
     n=0
@@ -362,7 +199,7 @@ then
     rm -rf argo.log
     clear
     echo argo获取超时,重试中
-    ./cloudflared-linux tunnel --url http://localhost:$port --no-autoupdate --edge-ip-version $ips --protocol http2 >argo.log 2>&1 &
+    ./cloudflared-linux tunnel --config quick_tunnel.yaml --no-autoupdate --edge-ip-version $ips --protocol http2 run >argo.log 2>&1 &
     sleep 1
 elif [ -z "$argo" ]
 then
@@ -374,33 +211,175 @@ fi
 done
 clear
 
-if [ "$domain_choice" == "1" ]
-then
-    connect_address="$argo"
-else
-    connect_address="$best_domain"
-fi
-
 node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
 if [[ -z "$node_tag" || "$node_tag" == "--" ]]; then
     node_tag="Argo_Node"
 fi
 
-if [ $protocol == 1 ]
+domains=("$argo" "cf.090227.xyz" "cloudflare.182682.xyz")
+labels=("默认Argo" "优选cf.090227" "优选182682")
+
+> nodes.txt
+
+cat>clash.yaml<<EOF
+port: 7890
+socks-port: 7891
+allow-lan: false
+mode: rule
+log-level: info
+proxies:
+EOF
+
+proxy_names=()
+
+for idx in "${!domains[@]}"; do
+    d="${domains[$idx]}"
+    l="${labels[$idx]}"
+
+    # VLESS TLS 节点
+    vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
+    echo "$vless_tls" >> nodes.txt
+    proxy_names+=("${node_tag}-VLESS-${l}-443")
+    cat>>clash.yaml<<EOF
+  - name: "${node_tag}-VLESS-${l}-443"
+    type: vless
+    server: ${d}
+    port: 443
+    uuid: ${uuid}
+    cipher: auto
+    tls: true
+    udp: true
+    servername: ${argo}
+    network: ws
+    ws-opts:
+      path: /${urlpath_vless}
+      headers:
+        Host: ${argo}
+EOF
+
+    # VLESS 80 节点
+    vless_80="vless://${uuid}@${d}:80?encryption=none&security=none&type=ws&host=${argo}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-80"
+    echo "$vless_80" >> nodes.txt
+    proxy_names+=("${node_tag}-VLESS-${l}-80")
+    cat>>clash.yaml<<EOF
+  - name: "${node_tag}-VLESS-${l}-80"
+    type: vless
+    server: ${d}
+    port: 80
+    uuid: ${uuid}
+    cipher: auto
+    tls: false
+    udp: true
+    network: ws
+    ws-opts:
+      path: /${urlpath_vless}
+      headers:
+        Host: ${argo}
+EOF
+
+    # Trojan TLS 节点
+    trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
+    echo "$trojan_tls" >> nodes.txt
+    proxy_names+=("${node_tag}-Trojan-${l}-443")
+    cat>>clash.yaml<<EOF
+  - name: "${node_tag}-Trojan-${l}-443"
+    type: trojan
+    server: ${d}
+    port: 443
+    password: ${uuid}
+    udp: true
+    sni: ${argo}
+    network: ws
+    ws-opts:
+      path: /${urlpath_trojan}
+      headers:
+        Host: ${argo}
+EOF
+
+    # Trojan 80 节点
+    trojan_80="trojan://${uuid}@${d}:80?security=none&type=ws&host=${argo}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-80"
+    echo "$trojan_80" >> nodes.txt
+    proxy_names+=("${node_tag}-Trojan-${l}-80")
+    cat>>clash.yaml<<EOF
+  - name: "${node_tag}-Trojan-${l}-80"
+    type: trojan
+    server: ${d}
+    port: 80
+    password: ${uuid}
+    udp: true
+    network: ws
+    ws-opts:
+      path: /${urlpath_trojan}
+      headers:
+        Host: ${argo}
+EOF
+done
+
+cat>>clash.yaml<<EOF
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+EOF
+
+for pname in "${proxy_names[@]}"; do
+    echo "      - \"${pname}\"" >> clash.yaml
+done
+
+cat>>clash.yaml<<EOF
+rules:
+  - MATCH,PROXY
+EOF
+
+if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
 then
-    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}'_tls'
-    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}
-    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "vless" "$connect_address" "$argo" "$urlpath" "$uuid" "."
+    base64 nodes.txt | tr -d '\n' > sub.txt
+else
+    base64 -w 0 nodes.txt > sub.txt
 fi
 
-if [ $protocol == 2 ]
-then
-    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}'_tls'
-    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}
-    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "trojan" "$connect_address" "$argo" "$urlpath" "$uuid" "."
+server_ip=$(get_server_ip)
+if [ -z "$server_ip" ]; then
+    server_ip="$argo"
 fi
 
-rm -rf argo.log
+sub_port=$[$RANDOM%10000+25000]
+abs_dir=$(pwd)
+start_sub_server "$abs_dir" "$sub_port"
+
+sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
+clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
+
+cat>v2ray.txt<<EOF
+======================== 一键梭哈多节点列表 ========================
+$(cat nodes.txt)
+
+端口替换提示:
+443 端口可替换为: 2053, 2083, 2087, 2096, 8443
+80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
+
+======================== 客户端订阅及导入链接 ========================
+本机订阅服务运行在: ${server_ip}:${sub_port}
+
+1. 通用订阅链接 (支持 v2rayN / NekoBox / Shadowrocket):
+${sub_online_url}
+
+2. v2rayN / NekoBox 一键导入协议链接:
+sub://${sub_online_url}
+
+3. Clash / Clash.Meta / Mihomo 一键导入配置:
+clash://install-config?url=${clash_online_url}
+
+4. Clash 在线配置文件直链:
+${clash_online_url}
+
+本地文件路径:
+- 节点列表: ${abs_dir}/nodes.txt
+- Base64 订阅: ${abs_dir}/sub.txt
+- Clash 配置: ${abs_dir}/clash.yaml
+=====================================================================
+EOF
+
 cat v2ray.txt
 echo -e '\n信息已经保存在 v2ray.txt,再次查看请运行 cat v2ray.txt'
 }
@@ -438,17 +417,16 @@ mv cloudflared-linux /opt/suoha/
 mv xray/xray /opt/suoha/
 rm -rf xray xray.zip
 uuid=$(cat /proc/sys/kernel/random/uuid)
-urlpath=$(echo $uuid | awk -F- '{print $1}')
-port=$[$RANDOM+10000]
+urlpath_vless="vl-$(echo $uuid | awk -F- '{print $1}')"
+urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
+port_vless=$[$RANDOM+10000]
+port_trojan=$[$port_vless+1]
 
-# 1: vless, 2: trojan
-if [ $protocol == 1 ]
-then
 cat>/opt/suoha/config.json<<EOF
 {
     "inbounds": [
         {
-            "port": $port,
+            "port": $port_vless,
             "listen": "localhost",
             "protocol": "vless",
             "settings": {
@@ -462,28 +440,12 @@ cat>/opt/suoha/config.json<<EOF
             "streamSettings": {
                 "network": "ws",
                 "wsSettings": {
-                    "path": "/$urlpath"
+                    "path": "/$urlpath_vless"
                 }
             }
-        }
-    ],
-    "outbounds": [
+        },
         {
-            "protocol": "freedom",
-            "settings": {}
-        }
-    ]
-}
-EOF
-fi
-
-if [ $protocol == 2 ]
-then
-cat>/opt/suoha/config.json<<EOF
-{
-    "inbounds": [
-        {
-            "port": $port,
+            "port": $port_trojan,
             "listen": "localhost",
             "protocol": "trojan",
             "settings": {
@@ -496,7 +458,7 @@ cat>/opt/suoha/config.json<<EOF
             "streamSettings": {
                 "network": "ws",
                 "wsSettings": {
-                    "path": "/$urlpath"
+                    "path": "/$urlpath_trojan"
                 }
             }
         }
@@ -509,7 +471,6 @@ cat>/opt/suoha/config.json<<EOF
     ]
 }
 EOF
-fi
 
 clear
 echo 复制下面的链接,用浏览器打开并授权需要绑定的域名
@@ -558,41 +519,186 @@ echo 绑定 TUNNEL $name 到域名 $domain
 echo $domain 绑定成功
 tunneluuid=$(cut -d= -f2 argo.log)
 
-if [ "$domain_choice" == "1" ]
-then
-    connect_address="$domain"
-else
-    connect_address="$best_domain"
-fi
-
 node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
 if [[ -z "$node_tag" || "$node_tag" == "--" ]]; then
     node_tag="Argo_Node"
 fi
 
-if [ $protocol == 1 ]
+domains=("$domain" "cf.090227.xyz" "cloudflare.182682.xyz")
+labels=("自定域名" "优选cf.090227" "优选182682")
+
+> /opt/suoha/nodes.txt
+
+cat>/opt/suoha/clash.yaml<<EOF
+port: 7890
+socks-port: 7891
+allow-lan: false
+mode: rule
+log-level: info
+proxies:
+EOF
+
+proxy_names=()
+
+for idx in "${!domains[@]}"; do
+    d="${domains[$idx]}"
+    l="${labels[$idx]}"
+
+    vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${domain}&type=ws&host=${domain}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
+    echo "$vless_tls" >> /opt/suoha/nodes.txt
+    proxy_names+=("${node_tag}-VLESS-${l}-443")
+    cat>>/opt/suoha/clash.yaml<<EOF
+  - name: "${node_tag}-VLESS-${l}-443"
+    type: vless
+    server: ${d}
+    port: 443
+    uuid: ${uuid}
+    cipher: auto
+    tls: true
+    udp: true
+    servername: ${domain}
+    network: ws
+    ws-opts:
+      path: /${urlpath_vless}
+      headers:
+        Host: ${domain}
+EOF
+
+    vless_80="vless://${uuid}@${d}:80?encryption=none&security=none&type=ws&host=${domain}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-80"
+    echo "$vless_80" >> /opt/suoha/nodes.txt
+    proxy_names+=("${node_tag}-VLESS-${l}-80")
+    cat>>/opt/suoha/clash.yaml<<EOF
+  - name: "${node_tag}-VLESS-${l}-80"
+    type: vless
+    server: ${d}
+    port: 80
+    uuid: ${uuid}
+    cipher: auto
+    tls: false
+    udp: true
+    network: ws
+    ws-opts:
+      path: /${urlpath_vless}
+      headers:
+        Host: ${domain}
+EOF
+
+    trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${domain}&type=ws&host=${domain}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
+    echo "$trojan_tls" >> /opt/suoha/nodes.txt
+    proxy_names+=("${node_tag}-Trojan-${l}-443")
+    cat>>/opt/suoha/clash.yaml<<EOF
+  - name: "${node_tag}-Trojan-${l}-443"
+    type: trojan
+    server: ${d}
+    port: 443
+    password: ${uuid}
+    udp: true
+    sni: ${domain}
+    network: ws
+    ws-opts:
+      path: /${urlpath_trojan}
+      headers:
+        Host: ${domain}
+EOF
+
+    trojan_80="trojan://${uuid}@${d}:80?security=none&type=ws&host=${domain}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-80"
+    echo "$trojan_80" >> /opt/suoha/nodes.txt
+    proxy_names+=("${node_tag}-Trojan-${l}-80")
+    cat>>/opt/suoha/clash.yaml<<EOF
+  - name: "${node_tag}-Trojan-${l}-80"
+    type: trojan
+    server: ${d}
+    port: 80
+    password: ${uuid}
+    udp: true
+    network: ws
+    ws-opts:
+      path: /${urlpath_trojan}
+      headers:
+        Host: ${domain}
+EOF
+done
+
+cat>>/opt/suoha/clash.yaml<<EOF
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+EOF
+
+for pname in "${proxy_names[@]}"; do
+    echo "      - \"${pname}\"" >> /opt/suoha/clash.yaml
+done
+
+cat>>/opt/suoha/clash.yaml<<EOF
+rules:
+  - MATCH,PROXY
+EOF
+
+if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
 then
-    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}'_tls'
-    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}
-    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "vless" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
+    base64 /opt/suoha/nodes.txt | tr -d '\n' > /opt/suoha/sub.txt
+else
+    base64 -w 0 /opt/suoha/nodes.txt > /opt/suoha/sub.txt
 fi
 
-if [ $protocol == 2 ]
-then
-    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}'_tls'
-    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}
-    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "trojan" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
+server_ip=$(get_server_ip)
+if [ -z "$server_ip" ]; then
+    server_ip="$domain"
 fi
+
+sub_port=$[$RANDOM%10000+25000]
+start_sub_server "/opt/suoha" "$sub_port"
+
+sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
+clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
+
+cat>/opt/suoha/v2ray.txt<<EOF
+======================== 节点连接信息 ========================
+$(cat /opt/suoha/nodes.txt)
+
+端口说明:
+443 端口可替换为: 2053, 2083, 2087, 2096, 8443
+80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
+
+======================== 客户端订阅及导入链接 ========================
+本机订阅服务运行在: ${server_ip}:${sub_port}
+
+1. 通用在线订阅链接 (适用于 v2rayN / NekoBox / Shadowrocket):
+${sub_online_url}
+
+2. v2rayN / NekoBox 一键导入协议链接:
+sub://${sub_online_url}
+
+3. Clash / Clash.Meta / Mihomo 一键导入配置:
+clash://install-config?url=${clash_online_url}
+
+4. Clash 在线配置文件直链:
+${clash_online_url}
+
+本地文件路径:
+- 节点列表: /opt/suoha/nodes.txt
+- Base64 订阅: /opt/suoha/sub.txt
+- Clash 配置: /opt/suoha/clash.yaml
+==============================================================
+EOF
 
 rm -rf argo.log
+
 cat>/opt/suoha/config.yaml<<EOF
 tunnel: $tunneluuid
 credentials-file: /root/.cloudflared/$tunneluuid.json
 
 ingress:
-  - hostname:
-    service: http://localhost:$port
+  - hostname: $domain
+    path: /$urlpath_vless
+    service: http://localhost:$port_vless
+  - hostname: $domain
+    path: /$urlpath_trojan
+    service: http://localhost:$port_trojan
+  - service: http_status:404
 EOF
+
 if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
 then
 cat>/etc/local.d/cloudflared.start<<EOF
@@ -642,6 +748,7 @@ systemctl --system daemon-reload
 systemctl start cloudflared.service
 systemctl start xray.service
 fi
+
 if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
 then
 cat>/opt/suoha/suoha.sh<<EOF
@@ -844,8 +951,8 @@ echo 将已经绑定的系统目录下的 /root/.cloudflared 文件夹以及内�
 echo 拷贝至新系统下同样的目录,会自动跳过登录验证
 
 echo -e '\n'梭哈是一种智慧!!!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈...'\n'
-echo 1.梭哈模式
-echo 2.安装服务
+echo 1.梭哈模式 (自动生成 VLESS+Trojan 及所有优选节点)
+echo 2.安装服务 (自定义域名绑定固定隧道)
 echo 3.卸载服务
 echo 4.清空缓存
 echo -e 0.退出脚本'\n'
@@ -856,45 +963,6 @@ then
 fi
 if [ $mode == 1 ]
 then
-    echo -e "\n请选择协议:"
-    echo "1. vless-argo (默认)"
-    echo "2. trojan-argo"
-    read -p "请输入选项 [1-2] (默认1): " protocol
-    if [ -z "$protocol" ]
-    then
-        protocol=1
-    fi
-    if [ $protocol != 1 ] && [ $protocol != 2 ]
-    then
-        echo 请输入正确的选项 [1-2]
-        exit
-    fi
-
-    echo -e "\n请选择优选域名:"
-    echo "1. 默认argo域名 (默认)"
-    echo "2. cf.090227.xyz"
-    echo "3. cloudflare.182682.xyz"
-    read -p "请输入选项 [1-3] (默认1): " domain_choice
-    if [ -z "$domain_choice" ]
-    then
-        domain_choice=1
-    fi
-    case "$domain_choice" in
-        1)
-            best_domain=""
-            ;;
-        2)
-            best_domain="cf.090227.xyz"
-            ;;
-        3)
-            best_domain="cloudflare.182682.xyz"
-            ;;
-        *)
-            echo 请输入正确的优选域名选项 [1-3]
-            exit
-            ;;
-    esac
-
     read -p "请选择argo连接模式IPV4或者IPV6(输入4或6,默认4):" ips
     if [ -z "$ips" ]
     then
@@ -914,49 +982,10 @@ then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
     fi
-    rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml
+    rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml quick_tunnel.yaml
     quicktunnel
 elif [ $mode == 2 ]
 then
-    echo -e "\n请选择协议:"
-    echo "1. vless-argo (默认)"
-    echo "2. trojan-argo"
-    read -p "请输入选项 [1-2] (默认1): " protocol
-    if [ -z "$protocol" ]
-    then
-        protocol=1
-    fi
-    if [ $protocol != 1 ] && [ $protocol != 2 ]
-    then
-        echo 请输入正确的选项 [1-2]
-        exit
-    fi
-
-    echo -e "\n请选择优选域名:"
-    echo "1. 默认argo域名 (默认)"
-    echo "2. cf.090227.xyz"
-    echo "3. cloudflare.182682.xyz"
-    read -p "请输入选项 [1-3] (默认1): " domain_choice
-    if [ -z "$domain_choice" ]
-    then
-        domain_choice=1
-    fi
-    case "$domain_choice" in
-        1)
-            best_domain=""
-            ;;
-        2)
-            best_domain="cf.090227.xyz"
-            ;;
-        3)
-            best_domain="cloudflare.182682.xyz"
-            ;;
-        *)
-            echo 请输入正确的优选域名选项 [1-3]
-            exit
-            ;;
-    esac
-
     read -p "请选择argo连接模式IPV4或者IPV6(输入4或6,默认4):" ips
     if [ -z "$ips" ]
     then
@@ -1021,7 +1050,7 @@ then
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
     fi
     pkill -f "http.server" >/dev/null 2>&1
-    rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml
+    rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml quick_tunnel.yaml
 else
     echo 退出成功
     exit
