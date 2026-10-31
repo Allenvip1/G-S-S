@@ -61,6 +61,19 @@ function get_server_ip(){
     echo "$ip"
 }
 
+function get_or_create_sub_port(){
+    local port_file="/etc/suoha_sub_port"
+    local port=""
+    if [ -f "$port_file" ]; then
+        port=$(cat "$port_file" | tr -d '\n\r ')
+    fi
+    if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
+        port=$[$RANDOM%10000+25000]
+        echo "$port" > "$port_file"
+    fi
+    echo "$port"
+}
+
 function start_sub_server(){
     local web_dir="$1"
     local port="$2"
@@ -74,6 +87,15 @@ function start_sub_server(){
         cd "$web_dir" && nohup python -m SimpleHTTPServer $port >/dev/null 2>&1 &
         cd - >/dev/null 2>&1
     fi
+}
+
+function sync_to_static_web(){
+    local src_dir="$1"
+    local static_dir="/var/www/suoha_sub"
+    mkdir -p "$static_dir" >/dev/null 2>&1
+    cp -f "${src_dir}/nodes.txt" "${static_dir}/nodes.txt" 2>/dev/null
+    cp -f "${src_dir}/sub.txt" "${static_dir}/sub.txt" 2>/dev/null
+    cp -f "${src_dir}/clash.yaml" "${static_dir}/clash.yaml" 2>/dev/null
 }
 
 function quicktunnel(){
@@ -113,7 +135,6 @@ urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
 port_vless=$[$RANDOM+10000]
 port_trojan=$[$port_vless+1]
 
-# 核心方案：VLESS 与 Trojan 各自拥有原生 WS 监听端口，通过两个独立的 cloudflared 实例同时拉起两条免费隧道，互不干扰
 cat>xray/config.json<<EOF
 {
     "inbounds": [
@@ -166,7 +187,6 @@ EOF
 
 ./xray/xray run>/dev/null 2>&1 &
 
-# 分别拉起两个独立的 Quick Tunnel，彻底解决分流握手断开问题
 ./cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
 ./cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
 sleep 2
@@ -226,7 +246,6 @@ EOF
 
 proxy_names=()
 
-# 1. 生成 VLESS 节点列表 (默认 Argo + 2组优选)
 vless_domains=("$argo_vl" "${opt_domains[@]}")
 vless_labels=("默认Argo" "${opt_labels[@]}")
 
@@ -255,7 +274,6 @@ for idx in "${!vless_domains[@]}"; do
 EOF
 done
 
-# 2. 生成 Trojan 节点列表 (默认 Argo + 2组优选)
 trojan_domains=("$argo_tr" "${opt_domains[@]}")
 trojan_labels=("默认Argo" "${opt_labels[@]}")
 
@@ -310,9 +328,10 @@ if [ -z "$server_ip" ]; then
     server_ip="$argo_vl"
 fi
 
-sub_port=$[$RANDOM%10000+25000]
-abs_dir=$(pwd)
-start_sub_server "$abs_dir" "$sub_port"
+# 获取/读取持久化固定订阅端口并同步文件至固定 Web 目录
+sub_port=$(get_or_create_sub_port)
+sync_to_static_web "."
+start_sub_server "/var/www/suoha_sub" "$sub_port"
 
 sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
 clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
@@ -325,7 +344,7 @@ $(cat nodes.txt)
 443 端口可根据需要改为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 
 ======================== 客户端订阅及导入链接 ========================
-本机订阅服务运行在: ${server_ip}:${sub_port}
+本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
 
 1. 通用订阅链接 (支持 v2rayN / NekoBox / Shadowrocket):
 ${sub_online_url}
@@ -339,10 +358,7 @@ clash://install-config?url=${clash_online_url}
 4. Clash 在线配置文件直链:
 ${clash_online_url}
 
-本地文件路径:
-- 节点列表: ${abs_dir}/nodes.txt
-- Base64 订阅: ${abs_dir}/sub.txt
-- Clash 配置: ${abs_dir}/clash.yaml
+持久订阅存储目录: /var/www/suoha_sub/
 =====================================================================
 EOF
 
@@ -578,8 +594,9 @@ if [ -z "$server_ip" ]; then
     server_ip="$domain"
 fi
 
-sub_port=$[$RANDOM%10000+25000]
-start_sub_server "/opt/suoha" "$sub_port"
+sub_port=$(get_or_create_sub_port)
+sync_to_static_web "/opt/suoha"
+start_sub_server "/var/www/suoha_sub" "$sub_port"
 
 sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
 clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
@@ -592,7 +609,7 @@ $(cat /opt/suoha/nodes.txt)
 443 端口可根据需要改为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 
 ======================== 客户端订阅及导入链接 ========================
-本机订阅服务运行在: ${server_ip}:${sub_port}
+本机固定订阅服务端口: ${sub_port} (已永久保存，重新部署无需重新导入客户端)
 
 1. 通用在线订阅链接 (适用于 v2rayN / NekoBox / Shadowrocket):
 ${sub_online_url}
@@ -606,16 +623,12 @@ clash://install-config?url=${clash_online_url}
 4. Clash 在线配置文件直链:
 ${clash_online_url}
 
-本地文件路径:
-- 节点列表: /opt/suoha/nodes.txt
-- Base64 订阅: /opt/suoha/sub.txt
-- Clash 配置: /opt/suoha/clash.yaml
+持久订阅存储目录: /var/www/suoha_sub/
 ==============================================================
 EOF
 
 rm -rf argo.log
 
-# 在指定域名 Named Tunnel 模式下，可以直接在 ingress 中配置路径分流给各自原生端口
 cat>/opt/suoha/config.yaml<<EOF
 tunnel: $tunneluuid
 credentials-file: /root/.cloudflared/$tunneluuid.json
@@ -764,7 +777,7 @@ then
     kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
     kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
     pkill -f "http.server" >/dev/null 2>&1
-    rm -rf /opt/suoha /etc/local.d/cloudflared.start /etc/local.d/xray.start /usr/bin/suoha ~/.cloudflared
+    rm -rf /opt/suoha /etc/local.d/cloudflared.start /etc/local.d/xray.start /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
     echo 所有服务都卸载完成
     echo 彻底删除授权记录
     echo 请访问 https://dash.cloudflare.com/profile/api-tokens
@@ -850,7 +863,7 @@ then
     kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
     kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
     pkill -f "http.server" >/dev/null 2>&1
-    rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared
+    rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
     systemctl --system daemon-reload
     echo 所有服务都卸载完成
     echo 彻底删除授权记录
@@ -953,7 +966,7 @@ then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
         pkill -f "http.server" >/dev/null 2>&1
-        rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha
+        rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha /etc/suoha_sub_port /var/www/suoha_sub
     else
         systemctl stop cloudflared.service
         systemctl stop xray.service
@@ -962,7 +975,7 @@ then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         pkill -f "http.server" >/dev/null 2>&1
-        rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared
+        rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
         systemctl --system daemon-reload
     fi
     clear
