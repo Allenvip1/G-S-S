@@ -43,15 +43,37 @@ then
     fi
 fi
 
+function get_server_ip(){
+    local ip=""
+    # 1. 尝试直接从本地网络接口取默认路由IP
+    ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    
+    # 2. 如果是内网保留地址或为空，通过 Cloudflare 自身 trace 接口高速获取
+    if [[ -z "$ip" || "$ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.) ]]; then
+        ip=$(curl -s4 --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F= '/ip/{print $2}')
+    fi
+    # 3. 备选接口 icanhazip
+    if [ -z "$ip" ]; then
+        ip=$(curl -s4 --connect-timeout 2 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\n\r ')
+    fi
+    # 4. 备选接口 ip.sb
+    if [ -z "$ip" ]; then
+        ip=$(curl -s4 --connect-timeout 2 https://api.ip.sb/ip 2>/dev/null | tr -d '\n\r ')
+    fi
+    # 5. IPv6 备选
+    if [ -z "$ip" ]; then
+        ip=$(curl -s6 --connect-timeout 2 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
+    fi
+    echo "$ip"
+}
+
 function start_sub_server(){
     local web_dir="$1"
     local port="$2"
 
-    # 关闭历史订阅服务进程
     pkill -f "http.server $port" >/dev/null 2>&1
     fuser -k ${port}/tcp >/dev/null 2>&1
 
-    # 使用 python3 启动静态 HTTP 订阅服务
     if [ -x "$(command -v python3)" ]; then
         nohup python3 -m http.server $port --directory "$web_dir" >/dev/null 2>&1 &
     elif [ -x "$(command -v python)" ]; then
@@ -71,13 +93,13 @@ function generate_sub_links(){
     local pwd_or_uuid="$8"
     local out_dir="$9"
 
-    # 生成节点链接文件 nodes.txt
+    # 生成基础节点文件
     cat>${out_dir}/nodes.txt<<EOF
 $node_tls
 $node_notls
 EOF
 
-    # 生成 Base64 订阅内容
+    # 生成 Base64
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
     then
         base64 ${out_dir}/nodes.txt | tr -d '\n' > ${out_dir}/sub.txt
@@ -85,7 +107,7 @@ EOF
         base64 -w 0 ${out_dir}/nodes.txt > ${out_dir}/sub.txt
     fi
 
-    # 生成 Clash/Mihomo 配置文件
+    # 生成 Clash 配置
     if [ "$protocol_type" == "vless" ]; then
 cat>${out_dir}/clash.yaml<<EOF
 port: 7890
@@ -160,17 +182,18 @@ rules:
 EOF
     fi
 
-    # 获取本机外网真实 IP
-    local server_ip=""
-    server_ip=$(curl -4 -s --connect-timeout 5 https://api.ipify.org || curl -4 -s --connect-timeout 5 https://ipv4.icanhazip.com || curl -4 -s --connect-timeout 5 https://ifconfig.me)
+    # 获取服务器真实 IP
+    local server_ip
+    server_ip=$(get_server_ip)
+    
+    # 兜底：如果完全拿不到IP，使用 argo 域名作为访问 host
     if [ -z "$server_ip" ]; then
-        server_ip=$(curl -6 -s --connect-timeout 5 https://api64.ipify.org || curl -s --connect-timeout 5 https://ipv6.icanhazip.com)
+        server_ip="$host_sni"
     fi
 
-    # 随机分配订阅端口 (25000-35000)
+    # 随机分配静态服务端口 (25000-35000)
     local sub_port=$[$RANDOM%10000+25000]
 
-    # 绝对路径启动 HTTP 服务
     local abs_out_dir
     abs_out_dir=$(cd "$out_dir" && pwd)
     start_sub_server "$abs_out_dir" "$sub_port"
@@ -178,7 +201,7 @@ EOF
     local sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
     local clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
 
-    # 汇总输出到 v2ray.txt
+    # 汇总写入 v2ray.txt
     cat>${out_dir}/v2ray.txt<<EOF
 ======================== 节点连接信息 ========================
 TLS 节点:
@@ -192,7 +215,7 @@ $node_notls
 80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
 
 ======================== 客户端订阅及导入链接 ========================
-本机订阅服务端口: ${sub_port} (已自动在后台开启)
+本机订阅服务运行在: ${server_ip}:${sub_port}
 
 1. 通用在线订阅链接 (适用于 v2rayN / NekoBox / Shadowrocket):
 ${sub_online_url}
@@ -203,10 +226,10 @@ sub://${sub_online_url}
 3. Clash / Clash.Meta / Mihomo 一键导入配置:
 clash://install-config?url=${clash_online_url}
 
-4. Clash 在线托管配置文件直链:
+4. Clash 在线配置文件直链:
 ${clash_online_url}
 
-本地订阅文件路径:
+本地文件路径:
 - 节点列表: ${abs_out_dir}/nodes.txt
 - Base64 订阅: ${abs_out_dir}/sub.txt
 - Clash 配置: ${abs_out_dir}/clash.yaml
@@ -358,9 +381,8 @@ else
     connect_address="$best_domain"
 fi
 
-# 处理节点名称，防止为空或包含空格
 node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
-if [ -z "$node_tag" ] || [ "$node_tag" == "--" ]; then
+if [[ -z "$node_tag" || "$node_tag" == "--" ]]; then
     node_tag="Argo_Node"
 fi
 
@@ -544,7 +566,7 @@ else
 fi
 
 node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
-if [ -z "$node_tag" ] || [ "$node_tag" == "--" ]; then
+if [[ -z "$node_tag" || "$node_tag" == "--" ]]; then
     node_tag="Argo_Node"
 fi
 
@@ -883,7 +905,7 @@ then
         echo 请输入正确的argo连接模式
         exit
     fi
-    isp=$(curl -$ips -s --connect-timeout 5 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
+    isp=$(curl -$ips -s --connect-timeout 2 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
     then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
@@ -945,7 +967,7 @@ then
         echo 请输入正确的argo连接模式
         exit
     fi
-    isp=$(curl -$ips -s --connect-timeout 5 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
+    isp=$(curl -$ips -s --connect-timeout 2 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
     then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
