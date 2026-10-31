@@ -29,6 +29,11 @@ then
     ${linux_update[$n]}
     ${linux_install[$n]} curl
 fi
+if [ -z $(type -P python3) ]
+then
+    ${linux_update[$n]}
+    ${linux_install[$n]} python3
+fi
 if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') != "Alpine" ]
 then
     if [ -z $(type -P systemctl) ]
@@ -37,6 +42,23 @@ then
         ${linux_install[$n]} systemctl
     fi
 fi
+
+function start_sub_server(){
+    local web_dir="$1"
+    local port="$2"
+
+    # 关闭历史订阅服务进程
+    pkill -f "http.server $port" >/dev/null 2>&1
+    fuser -k ${port}/tcp >/dev/null 2>&1
+
+    # 使用 python3 启动静态 HTTP 订阅服务
+    if [ -x "$(command -v python3)" ]; then
+        nohup python3 -m http.server $port --directory "$web_dir" >/dev/null 2>&1 &
+    elif [ -x "$(command -v python)" ]; then
+        cd "$web_dir" && nohup python -m SimpleHTTPServer $port >/dev/null 2>&1 &
+        cd - >/dev/null 2>&1
+    fi
+}
 
 function generate_sub_links(){
     local node_tls="$1"
@@ -61,13 +83,6 @@ EOF
         base64 ${out_dir}/nodes.txt | tr -d '\n' > ${out_dir}/sub.txt
     else
         base64 -w 0 ${out_dir}/nodes.txt > ${out_dir}/sub.txt
-    fi
-
-    # 上传 Base64 订阅生成远程托管链接 (dpaste 有效期 7 天，免注册 API)
-    local sub_online_url=""
-    sub_online_url=$(curl -s -X POST -F "content=<${out_dir}/sub.txt" -F "expiry_days=7" https://dpaste.com/api/v2/ 2>/dev/null)
-    if [ -n "$sub_online_url" ]; then
-        sub_online_url="${sub_online_url}.txt"
     fi
 
     # 生成 Clash/Mihomo 配置文件
@@ -145,12 +160,23 @@ rules:
 EOF
     fi
 
-    # 上传 Clash 配置文件
-    local clash_online_url=""
-    clash_online_url=$(curl -s -X POST -F "content=<${out_dir}/clash.yaml" -F "expiry_days=7" https://dpaste.com/api/v2/ 2>/dev/null)
-    if [ -n "$clash_online_url" ]; then
-        clash_online_url="${clash_online_url}.txt"
+    # 获取本机外网真实 IP
+    local server_ip=""
+    server_ip=$(curl -4 -s --connect-timeout 5 https://api.ipify.org || curl -4 -s --connect-timeout 5 https://ipv4.icanhazip.com || curl -4 -s --connect-timeout 5 https://ifconfig.me)
+    if [ -z "$server_ip" ]; then
+        server_ip=$(curl -6 -s --connect-timeout 5 https://api64.ipify.org || curl -s --connect-timeout 5 https://ipv6.icanhazip.com)
     fi
+
+    # 随机分配订阅端口 (25000-35000)
+    local sub_port=$[$RANDOM%10000+25000]
+
+    # 绝对路径启动 HTTP 服务
+    local abs_out_dir
+    abs_out_dir=$(cd "$out_dir" && pwd)
+    start_sub_server "$abs_out_dir" "$sub_port"
+
+    local sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
+    local clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
 
     # 汇总输出到 v2ray.txt
     cat>${out_dir}/v2ray.txt<<EOF
@@ -166,21 +192,24 @@ $node_notls
 80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
 
 ======================== 客户端订阅及导入链接 ========================
+本机订阅服务端口: ${sub_port} (已自动在后台开启)
+
 1. 通用在线订阅链接 (适用于 v2rayN / NekoBox / Shadowrocket):
-$sub_online_url
+${sub_online_url}
 
 2. v2rayN / NekoBox 一键导入协议链接:
-sub://$sub_online_url
+sub://${sub_online_url}
 
 3. Clash / Clash.Meta / Mihomo 一键导入配置:
 clash://install-config?url=${clash_online_url}
-Clash 在线托管直链:
-$clash_online_url
+
+4. Clash 在线托管配置文件直链:
+${clash_online_url}
 
 本地订阅文件路径:
-- 节点列表: ${out_dir}/nodes.txt
-- Base64 订阅: ${out_dir}/sub.txt
-- Clash 配置: ${out_dir}/clash.yaml
+- 节点列表: ${abs_out_dir}/nodes.txt
+- Base64 订阅: ${abs_out_dir}/sub.txt
+- Clash 配置: ${abs_out_dir}/clash.yaml
 ==============================================================
 EOF
 }
@@ -329,20 +358,24 @@ else
     connect_address="$best_domain"
 fi
 
-local_isp=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
+# 处理节点名称，防止为空或包含空格
+node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
+if [ -z "$node_tag" ] || [ "$node_tag" == "--" ]; then
+    node_tag="Argo_Node"
+fi
 
 if [ $protocol == 1 ]
 then
-    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}'_tls'
-    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}
-    generate_sub_links "$node_tls" "$node_notls" "$isp" "vless" "$connect_address" "$argo" "$urlpath" "$uuid" "."
+    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}'_tls'
+    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}
+    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "vless" "$connect_address" "$argo" "$urlpath" "$uuid" "."
 fi
 
 if [ $protocol == 2 ]
 then
-    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}'_tls'
-    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${local_isp}
-    generate_sub_links "$node_tls" "$node_notls" "$isp" "trojan" "$connect_address" "$argo" "$urlpath" "$uuid" "."
+    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}'_tls'
+    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'${node_tag}
+    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "trojan" "$connect_address" "$argo" "$urlpath" "$uuid" "."
 fi
 
 rm -rf argo.log
@@ -510,20 +543,23 @@ else
     connect_address="$best_domain"
 fi
 
-local_isp=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
+node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
+if [ -z "$node_tag" ] || [ "$node_tag" == "--" ]; then
+    node_tag="Argo_Node"
+fi
 
 if [ $protocol == 1 ]
 then
-    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}'_tls'
-    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}
-    generate_sub_links "$node_tls" "$node_notls" "$isp" "vless" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
+    node_tls='vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}'_tls'
+    node_notls='vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}
+    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "vless" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
 fi
 
 if [ $protocol == 2 ]
 then
-    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}'_tls'
-    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${local_isp}
-    generate_sub_links "$node_tls" "$node_notls" "$isp" "trojan" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
+    node_tls='trojan://'$uuid'@'$connect_address':443?security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}'_tls'
+    node_notls='trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'${node_tag}
+    generate_sub_links "$node_tls" "$node_notls" "$node_tag" "trojan" "$connect_address" "$domain" "$urlpath" "$uuid" "/opt/suoha"
 fi
 
 rm -rf argo.log
@@ -667,6 +703,7 @@ elif [ \$menu == 5 ]
 then
     kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
     kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+    pkill -f "http.server" >/dev/null 2>&1
     rm -rf /opt/suoha /etc/local.d/cloudflared.start /etc/local.d/xray.start /usr/bin/suoha ~/.cloudflared
     echo 所有服务都卸载完成
     echo 彻底删除授权记录
@@ -752,6 +789,7 @@ then
     systemctl disable xray.service
     kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
     kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
+    pkill -f "http.server" >/dev/null 2>&1
     rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared
     systemctl --system daemon-reload
     echo 所有服务都卸载完成
@@ -845,7 +883,7 @@ then
         echo 请输入正确的argo连接模式
         exit
     fi
-    isp=$(curl -$ips -s https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
+    isp=$(curl -$ips -s --connect-timeout 5 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
     then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
@@ -907,7 +945,7 @@ then
         echo 请输入正确的argo连接模式
         exit
     fi
-    isp=$(curl -$ips -s https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
+    isp=$(curl -$ips -s --connect-timeout 5 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
     then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
@@ -932,6 +970,7 @@ then
     then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+        pkill -f "http.server" >/dev/null 2>&1
         rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha
     else
         systemctl stop cloudflared.service
@@ -940,6 +979,7 @@ then
         systemctl disable xray.service
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+        pkill -f "http.server" >/dev/null 2>&1
         rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared
         systemctl --system daemon-reload
     fi
@@ -958,6 +998,7 @@ then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
     fi
+    pkill -f "http.server" >/dev/null 2>&1
     rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml
 else
     echo 退出成功
