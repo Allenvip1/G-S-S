@@ -71,7 +71,7 @@ uuid=$(cat /proc/sys/kernel/random/uuid)
 urlpath=$(echo $uuid | awk -F- '{print $1}')
 port=$[$RANDOM+10000]
 
-# 1: vless, 2: trojan, 3: vmess
+# 1: vless, 2: trojan
 if [ $protocol == 1 ]
 then
 cat>xray/config.json<<EOF
@@ -120,41 +120,6 @@ cat>xray/config.json<<EOF
                 "clients": [
                     {
                         "password": "$uuid"
-                    }
-                ]
-            },
-            "streamSettings": {
-                "network": "ws",
-                "wsSettings": {
-                    "path": "/$urlpath"
-                }
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "settings": {}
-        }
-    ]
-}
-EOF
-fi
-
-if [ $protocol == 3 ]
-then
-cat>xray/config.json<<EOF
-{
-    "inbounds": [
-        {
-            "port": $port,
-            "listen": "localhost",
-            "protocol": "vmess",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "$uuid",
-                        "alterId": 0
                     }
                 ]
             },
@@ -210,42 +175,31 @@ fi
 done
 clear
 
+if [ "$domain_choice" == "1" ]
+then
+    connect_address="$argo"
+else
+    connect_address="$best_domain"
+fi
+
 if [ $protocol == 1 ]
 then
-    echo -e "vless链接已经生成, 优选域名为: $best_domain\n" > v2ray.txt
-    echo 'vless://'$uuid'@'$best_domain':443?encryption=none&security=tls&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >> v2ray.txt
+    echo -e "vless链接已经生成, 连接地址为: $connect_address, SNI为: $argo\n" > v2ray.txt
+    echo 'vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >> v2ray.txt
     echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >> v2ray.txt
-    echo 'vless://'$uuid'@'$best_domain':80?encryption=none&security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >> v2ray.txt
+    echo 'vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >> v2ray.txt
     echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095 >> v2ray.txt
 fi
 
 if [ $protocol == 2 ]
 then
-    echo -e "trojan链接已经生成, 优选域名为: $best_domain\n" > v2ray.txt
-    echo 'trojan://'$uuid'@'$best_domain':443?security=tls&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >> v2ray.txt
+    echo -e "trojan链接已经生成, 连接地址为: $connect_address, SNI为: $argo\n" > v2ray.txt
+    echo 'trojan://'$uuid'@'$connect_address':443?security=tls&sni='$argo'&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >> v2ray.txt
     echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >> v2ray.txt
-    echo 'trojan://'$uuid'@'$best_domain':80?security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >> v2ray.txt
+    echo 'trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$argo'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >> v2ray.txt
     echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095 >> v2ray.txt
 fi
 
-if [ $protocol == 3 ]
-then
-    echo -e "vmess链接已经生成, 优选域名为: $best_domain\n" > v2ray.txt
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        echo 'vmess://'$(echo '{"add":"'$best_domain'","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"/'$urlpath'","port":"443","ps":"'$(echo $isp | sed -e 's/_/ /g')'_tls","tls":"tls","type":"none","v":"2"}' | base64 | awk '{ORS=(NR%76==0?RS:"");}1') >> v2ray.txt
-    else
-        echo 'vmess://'$(echo '{"add":"'$best_domain'","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"/'$urlpath'","port":"443","ps":"'$(echo $isp | sed -e 's/_/ /g')'_tls","tls":"tls","type":"none","v":"2"}' | base64 -w 0) >> v2ray.txt
-    fi
-    echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >> v2ray.txt
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        echo 'vmess://'$(echo '{"add":"'$best_domain'","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"/'$urlpath'","port":"80","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"","type":"none","v":"2"}' | base64 | awk '{ORS=(NR%76==0?RS:"");}1') >> v2ray.txt
-    else
-        echo 'vmess://'$(echo '{"add":"'$best_domain'","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"/'$urlpath'","port":"80","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"","type":"none","v":"2"}' | base64 -w 0) >> v2ray.txt
-    fi
-    echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095 >> v2ray.txt
-fi
 rm -rf argo.log
 cat v2ray.txt
 echo -e '\n'信息已经保存在 v2ray.txt,再次查看请运行 cat v2ray.txt
@@ -287,7 +241,7 @@ uuid=$(cat /proc/sys/kernel/random/uuid)
 urlpath=$(echo $uuid | awk -F- '{print $1}')
 port=$[$RANDOM+10000]
 
-# 1: vless, 2: trojan, 3: vmess
+# 1: vless, 2: trojan
 if [ $protocol == 1 ]
 then
 cat>/opt/suoha/config.json<<EOF
@@ -336,41 +290,6 @@ cat>/opt/suoha/config.json<<EOF
                 "clients": [
                     {
                         "password": "$uuid"
-                    }
-                ]
-            },
-            "streamSettings": {
-                "network": "ws",
-                "wsSettings": {
-                    "path": "/$urlpath"
-                }
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "settings": {}
-        }
-    ]
-}
-EOF
-fi
-
-if [ $protocol == 3 ]
-then
-cat>/opt/suoha/config.json<<EOF
-{
-    "inbounds": [
-        {
-            "port": $port,
-            "listen": "localhost",
-            "protocol": "vmess",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "$uuid",
-                        "alterId": 0
                     }
                 ]
             },
@@ -439,12 +358,19 @@ echo 绑定 TUNNEL $name 到域名 $domain
 echo $domain 绑定成功
 tunneluuid=$(cut -d= -f2 argo.log)
 
+if [ "$domain_choice" == "1" ]
+then
+    connect_address="$domain"
+else
+    connect_address="$best_domain"
+fi
+
 if [ $protocol == 1 ]
 then
-    echo -e "vless链接已经生成, 优选域名为: $best_domain\n" >/opt/suoha/v2ray.txt
-    echo 'vless://'$uuid'@'$best_domain':443?encryption=none&security=tls&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >>/opt/suoha/v2ray.txt
+    echo -e "vless链接已经生成, 连接地址为: $connect_address, SNI为: $domain\n" >/opt/suoha/v2ray.txt
+    echo 'vless://'$uuid'@'$connect_address':443?encryption=none&security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >>/opt/suoha/v2ray.txt
     echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >>/opt/suoha/v2ray.txt
-    echo 'vless://'$uuid'@'$best_domain':80?encryption=none&security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >>/opt/suoha/v2ray.txt
+    echo 'vless://'$uuid'@'$connect_address':80?encryption=none&security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >>/opt/suoha/v2ray.txt
     echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095'\n' >>/opt/suoha/v2ray.txt
     echo 注意:如果 80 8080 8880 2052 2082 2086 2095 端口无法正常使用 >>/opt/suoha/v2ray.txt
     echo 请前往 https://dash.cloudflare.com/ >>/opt/suoha/v2ray.txt
@@ -453,22 +379,10 @@ fi
 
 if [ $protocol == 2 ]
 then
-    echo -e "trojan链接已经生成, 优选域名为: $best_domain\n" >/opt/suoha/v2ray.txt
-    echo 'trojan://'$uuid'@'$best_domain':443?security=tls&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >>/opt/suoha/v2ray.txt
+    echo -e "trojan链接已经生成, 连接地址为: $connect_address, SNI为: $domain\n" >/opt/suoha/v2ray.txt
+    echo 'trojan://'$uuid'@'$connect_address':443?security=tls&sni='$domain'&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >>/opt/suoha/v2ray.txt
     echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >>/opt/suoha/v2ray.txt
-    echo 'trojan://'$uuid'@'$best_domain':80?security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >>/opt/suoha/v2ray.txt
-    echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095'\n' >>/opt/suoha/v2ray.txt
-    echo 注意:如果 80 8080 8880 2052 2082 2086 2095 端口无法正常使用 >>/opt/suoha/v2ray.txt
-    echo 请前往 https://dash.cloudflare.com/ >>/opt/suoha/v2ray.txt
-    echo 检查管理面板 SSL/TLS - 边缘证书 - 始终使用HTTPS 是否处于关闭状态 >>/opt/suoha/v2ray.txt
-fi
-
-if [ $protocol == 3 ]
-then
-    echo -e "vmess链接已经生成, 优选域名为: $best_domain\n" >/opt/suoha/v2ray.txt
-    echo 'vmess://'$(echo '{"add":"'$best_domain'","aid":"0","host":"'$domain'","id":"'$uuid'","net":"ws","path":"/'$urlpath'","port":"443","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"tls","type":"none","v":"2"}' | base64 -w 0) >>/opt/suoha/v2ray.txt
-    echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >>/opt/suoha/v2ray.txt
-    echo 'vmess://'$(echo '{"add":"'$best_domain'","aid":"0","host":"'$domain'","id":"'$uuid'","net":"ws","path":"/'$urlpath'","port":"80","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"","type":"none","v":"2"}' | base64 -w 0) >>/opt/suoha/v2ray.txt
+    echo 'trojan://'$uuid'@'$connect_address':80?security=none&type=ws&host='$domain'&path=%2F'$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >>/opt/suoha/v2ray.txt
     echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095'\n' >>/opt/suoha/v2ray.txt
     echo 注意:如果 80 8080 8880 2052 2082 2086 2095 端口无法正常使用 >>/opt/suoha/v2ray.txt
     echo 请前往 https://dash.cloudflare.com/ >>/opt/suoha/v2ray.txt
@@ -748,20 +662,19 @@ then
     echo -e "\n请选择协议:"
     echo "1. vless-argo (默认)"
     echo "2. trojan-argo"
-    echo "3. vmess-argo"
-    read -p "请输入选项 [1-3] (默认1): " protocol
+    read -p "请输入选项 [1-2] (默认1): " protocol
     if [ -z "$protocol" ]
     then
         protocol=1
     fi
-    if [ $protocol != 1 ] && [ $protocol != 2 ] && [ $protocol != 3 ]
+    if [ $protocol != 1 ] && [ $protocol != 2 ]
     then
-        echo 请输入正确的选项 [1-3]
+        echo 请输入正确的选项 [1-2]
         exit
     fi
 
     echo -e "\n请选择优选域名:"
-    echo "1. visa.com (默认)"
+    echo "1. 默认argo域名 (默认)"
     echo "2. cf.090227.xyz"
     echo "3. cloudflare.182682.xyz"
     read -p "请输入选项 [1-3] (默认1): " domain_choice
@@ -771,7 +684,7 @@ then
     fi
     case "$domain_choice" in
         1)
-            best_domain="visa.com"
+            best_domain=""
             ;;
         2)
             best_domain="cf.090227.xyz"
@@ -811,20 +724,19 @@ then
     echo -e "\n请选择协议:"
     echo "1. vless-argo (默认)"
     echo "2. trojan-argo"
-    echo "3. vmess-argo"
-    read -p "请输入选项 [1-3] (默认1): " protocol
+    read -p "请输入选项 [1-2] (默认1): " protocol
     if [ -z "$protocol" ]
     then
         protocol=1
     fi
-    if [ $protocol != 1 ] && [ $protocol != 2 ] && [ $protocol != 3 ]
+    if [ $protocol != 1 ] && [ $protocol != 2 ]
     then
-        echo 请输入正确的选项 [1-3]
+        echo 请输入正确的选项 [1-2]
         exit
     fi
 
     echo -e "\n请选择优选域名:"
-    echo "1. visa.com (默认)"
+    echo "1. 默认argo域名 (默认)"
     echo "2. cf.090227.xyz"
     echo "3. cloudflare.182682.xyz"
     read -p "请输入选项 [1-3] (默认1): " domain_choice
@@ -834,7 +746,7 @@ then
     fi
     case "$domain_choice" in
         1)
-            best_domain="visa.com"
+            best_domain=""
             ;;
         2)
             best_domain="cf.090227.xyz"
