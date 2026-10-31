@@ -113,7 +113,7 @@ urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
 port_main=$[$RANDOM+10000]
 port_trojan=$[$port_main+1]
 
-# Xray 配置：主端口接收 cloudflared 流量，VLESS 在主端口提供 WS 服务，未匹配的请求或 trojan 路径 fallback 到 Trojan 端口
+# Xray 配置：主端口接收 cloudflared 流量，VLESS 在主端口提供 WS 服务，trojan 路径 fallback 到 Trojan 端口
 cat>xray/config.json<<EOF
 {
     "inbounds": [
@@ -172,7 +172,6 @@ EOF
 
 ./xray/xray run>/dev/null 2>&1 &
 
-# 使用标准的 Quick Tunnel 命令格式，绝对不会报错
 ./cloudflared-linux tunnel --url http://127.0.0.1:$port_main --no-autoupdate --edge-ip-version $ips --protocol http2 >argo.log 2>&1 &
 sleep 2
 
@@ -232,6 +231,7 @@ for idx in "${!domains[@]}"; do
     d="${domains[$idx]}"
     l="${labels[$idx]}"
 
+    # VLESS TLS (443) 节点
     vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
     echo "$vless_tls" >> nodes.txt
     proxy_names+=("${node_tag}-VLESS-${l}-443")
@@ -252,25 +252,7 @@ for idx in "${!domains[@]}"; do
         Host: ${argo}
 EOF
 
-    vless_80="vless://${uuid}@${d}:80?encryption=none&security=none&type=ws&host=${argo}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-80"
-    echo "$vless_80" >> nodes.txt
-    proxy_names+=("${node_tag}-VLESS-${l}-80")
-    cat>>clash.yaml<<EOF
-  - name: "${node_tag}-VLESS-${l}-80"
-    type: vless
-    server: ${d}
-    port: 80
-    uuid: ${uuid}
-    cipher: auto
-    tls: false
-    udp: true
-    network: ws
-    ws-opts:
-      path: /${urlpath_vless}
-      headers:
-        Host: ${argo}
-EOF
-
+    # Trojan TLS (443) 节点
     trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${argo}&type=ws&host=${argo}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
     echo "$trojan_tls" >> nodes.txt
     proxy_names+=("${node_tag}-Trojan-${l}-443")
@@ -282,23 +264,6 @@ EOF
     password: ${uuid}
     udp: true
     sni: ${argo}
-    network: ws
-    ws-opts:
-      path: /${urlpath_trojan}
-      headers:
-        Host: ${argo}
-EOF
-
-    trojan_80="trojan://${uuid}@${d}:80?security=none&type=ws&host=${argo}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-80"
-    echo "$trojan_80" >> nodes.txt
-    proxy_names+=("${node_tag}-Trojan-${l}-80")
-    cat>>clash.yaml<<EOF
-  - name: "${node_tag}-Trojan-${l}-80"
-    type: trojan
-    server: ${d}
-    port: 80
-    password: ${uuid}
-    udp: true
     network: ws
     ws-opts:
       path: /${urlpath_trojan}
@@ -343,12 +308,11 @@ sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
 clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
 
 cat>v2ray.txt<<EOF
-======================== 一键梭哈多节点列表 ========================
+======================== 一键梭哈 443 TLS 节点列表 ========================
 $(cat nodes.txt)
 
 端口替换提示:
-443 端口可替换为: 2053, 2083, 2087, 2096, 8443
-80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
+443 端口可根据需要改为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 
 ======================== 客户端订阅及导入链接 ========================
 本机订阅服务运行在: ${server_ip}:${sub_port}
@@ -563,25 +527,6 @@ for idx in "${!domains[@]}"; do
         Host: ${domain}
 EOF
 
-    vless_80="vless://${uuid}@${d}:80?encryption=none&security=none&type=ws&host=${domain}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-80"
-    echo "$vless_80" >> /opt/suoha/nodes.txt
-    proxy_names+=("${node_tag}-VLESS-${l}-80")
-    cat>>/opt/suoha/clash.yaml<<EOF
-  - name: "${node_tag}-VLESS-${l}-80"
-    type: vless
-    server: ${d}
-    port: 80
-    uuid: ${uuid}
-    cipher: auto
-    tls: false
-    udp: true
-    network: ws
-    ws-opts:
-      path: /${urlpath_vless}
-      headers:
-        Host: ${domain}
-EOF
-
     trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${domain}&type=ws&host=${domain}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
     echo "$trojan_tls" >> /opt/suoha/nodes.txt
     proxy_names+=("${node_tag}-Trojan-${l}-443")
@@ -593,23 +538,6 @@ EOF
     password: ${uuid}
     udp: true
     sni: ${domain}
-    network: ws
-    ws-opts:
-      path: /${urlpath_trojan}
-      headers:
-        Host: ${domain}
-EOF
-
-    trojan_80="trojan://${uuid}@${d}:80?security=none&type=ws&host=${domain}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-80"
-    echo "$trojan_80" >> /opt/suoha/nodes.txt
-    proxy_names+=("${node_tag}-Trojan-${l}-80")
-    cat>>/opt/suoha/clash.yaml<<EOF
-  - name: "${node_tag}-Trojan-${l}-80"
-    type: trojan
-    server: ${d}
-    port: 80
-    password: ${uuid}
-    udp: true
     network: ws
     ws-opts:
       path: /${urlpath_trojan}
@@ -657,8 +585,7 @@ cat>/opt/suoha/v2ray.txt<<EOF
 $(cat /opt/suoha/nodes.txt)
 
 端口说明:
-443 端口可替换为: 2053, 2083, 2087, 2096, 8443
-80 端口可替换为:  8080, 8880, 2052, 2082, 2086, 2095
+443 端口可根据需要改为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 
 ======================== 客户端订阅及导入链接 ========================
 本机订阅服务运行在: ${server_ip}:${sub_port}
@@ -946,7 +873,7 @@ echo "将已经绑定的系统目录下的 /root/.cloudflared 文件夹以及内
 echo "拷贝至新系统下同样的目录,会自动跳过登录验证"
 
 echo -e "\n梭哈是一种智慧!!!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈...\n"
-echo "1.梭哈模式 (自动生成 VLESS+Trojan 及所有优选节点)"
+echo "1.梭哈模式 (自动生成 VLESS+Trojan 443 TLS 优选节点)"
 echo "2.安装服务 (自定义域名绑定固定隧道)"
 echo "3.卸载服务"
 echo "4.清空缓存"
