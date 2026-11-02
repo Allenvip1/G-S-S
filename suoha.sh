@@ -61,6 +61,21 @@ function get_server_ip(){
     echo "$ip"
 }
 
+function get_server_ipv6(){
+    local ip6=""
+    ip6=$(curl -s6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
+    if [ -z "$ip6" ]; then
+        ip6=$(curl -s6 --connect-timeout 3 https://ipv6.icanhazip.com 2>/dev/null | tr -d '\n\r ')
+    fi
+    if [ -z "$ip6" ]; then
+        ip6=$(curl -s6 --connect-timeout 3 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26}' | grep ":" | tr -d '\n\r ')
+    fi
+    if [ -z "$ip6" ]; then
+        ip6=$(ip -6 addr show scope global | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
+    fi
+    echo "$ip6"
+}
+
 function get_or_create_sub_port(){
     local port_file="/etc/suoha_sub_port"
     local port=""
@@ -328,7 +343,6 @@ if [ -z "$server_ip" ]; then
     server_ip="$argo_vl"
 fi
 
-# 获取/读取持久化固定订阅端口并同步文件至固定 Web 目录
 sub_port=$(get_or_create_sub_port)
 sync_to_static_web "."
 start_sub_server "/var/www/suoha_sub" "$sub_port"
@@ -364,6 +378,174 @@ EOF
 
 cat v2ray.txt
 echo -e "\n信息已经保存在 v2ray.txt,再次查看请运行 cat v2ray.txt"
+}
+
+function install_ipv6_ss(){
+    clear
+    echo "正在检测机器公网 IPv6 地址..."
+    local ipv6_addr
+    ipv6_addr=$(get_server_ipv6)
+
+    if [ -z "$ipv6_addr" ]; then
+        echo "未检测到可用的公网 IPv6 地址，无法部署 IPv6 直连 SS 节点！"
+        read -p "按回车键返回主菜单..."
+        return
+    fi
+
+    echo "检测到公网 IPv6: $ipv6_addr"
+
+    # 判断当前主服务安装路径
+    local xray_dir="/opt/suoha"
+    local is_installed_mode=1
+    if [ ! -f "/opt/suoha/config.json" ]; then
+        if [ -f "./xray/config.json" ]; then
+            xray_dir="./xray"
+            is_installed_mode=0
+        else
+            echo "未检测到正在运行的 Xray 服务，请先执行【1.梭哈模式】或【2.安装服务】后再增加部署！"
+            read -p "按回车键返回主菜单..."
+            return
+        fi
+    fi
+
+    # 随机生成 SS 专属端口及密码
+    local ss_port=$[$RANDOM%10000+30000]
+    local ss_password=$(cat /proc/sys/kernel/random/uuid | awk -F- '{print $1$2}')
+    local ss_method="aes-128-gcm"
+
+    echo "正在注入 IPv6 Shadowsocks 节点配置 (端口: $ss_port, 加密: $ss_method)..."
+
+    # 使用 python3 安全将 SS inbound 插入到 Xray 的 config.json
+    python3 - <<EOF
+import json, sys
+
+cfg_file = "$xray_dir/config.json"
+try:
+    with open(cfg_file, 'r') as f:
+        data = json.load(f)
+    
+    # 移除历史可能存在的同类 ss-inbound
+    data['inbounds'] = [ib for ib in data.get('inbounds', []) if ib.get('tag') != 'ss-ipv6']
+    
+    ss_ib = {
+        "tag": "ss-ipv6",
+        "port": int("$ss_port"),
+        "listen": "::",
+        "protocol": "shadowsocks",
+        "settings": {
+            "method": "$ss_method",
+            "password": "$ss_password",
+            "network": "tcp,udp"
+        }
+    }
+    data['inbounds'].append(ss_ib)
+    
+    with open(cfg_file, 'w') as f:
+        json.dump(data, f, indent=4)
+except Exception as e:
+    sys.exit(1)
+EOF
+
+    if [ $? -ne 0 ]; then
+        echo "注入 Xray 配置失败，请检查 python3 环境！"
+        read -p "按回车键返回主菜单..."
+        return
+    fi
+
+    # 重启 Xray 使其生效
+    if [ $is_installed_mode -eq 1 ]; then
+        if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+        then
+            /etc/local.d/xray.start >/dev/null 2>&1
+        else
+            systemctl restart xray.service >/dev/null 2>&1
+        fi
+    else
+        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+        ./xray/xray run >/dev/null 2>&1 &
+    fi
+
+    # 生成 ss:// 节点链接
+    local ss_user_info="${ss_method}:${ss_password}"
+    local ss_base64
+    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+    then
+        ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n')
+    else
+        ss_base64=$(echo -n "$ss_user_info" | base64 -w 0)
+    fi
+    local ss_link="ss://${ss_base64}@[${ipv6_addr}]:${ss_port}#IPv6-SS-Direct"
+
+    # 追加到本地 nodes.txt
+    local work_dir="."
+    if [ $is_installed_mode -eq 1 ]; then
+        work_dir="/opt/suoha"
+    fi
+
+    echo "$ss_link" >> "${work_dir}/nodes.txt"
+
+    # 追加到 clash.yaml (若存在)
+    if [ -f "${work_dir}/clash.yaml" ]; then
+        python3 - <<EOF
+import sys
+
+yaml_file = "${work_dir}/clash.yaml"
+try:
+    with open(yaml_file, 'r') as f:
+        lines = f.readlines()
+    
+    new_lines = []
+    proxy_inserted = False
+    group_inserted = False
+    for line in lines:
+        if line.strip().startswith("proxy-groups:") and not proxy_inserted:
+            new_lines.append("  - name: \"IPv6-SS-Direct\"\n")
+            new_lines.append("    type: ss\n")
+            new_lines.append("    server: \"${ipv6_addr}\"\n")
+            new_lines.append("    port: ${ss_port}\n")
+            new_lines.append("    cipher: ${ss_method}\n")
+            new_lines.append("    password: \"${ss_password}\"\n")
+            new_lines.append("    udp: true\n")
+            proxy_inserted = True
+        if line.strip().startswith("rules:") and not group_inserted:
+            new_lines.append("      - \"IPv6-SS-Direct\"\n")
+            group_inserted = True
+        new_lines.append(line)
+    
+    with open(yaml_file, 'w') as f:
+        f.writelines(new_lines)
+except Exception:
+    pass
+EOF
+    fi
+
+    # 重新生成 Base64 订阅并同步
+    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+    then
+        base64 "${work_dir}/nodes.txt" | tr -d '\n' > "${work_dir}/sub.txt"
+    else
+        base64 -w 0 "${work_dir}/nodes.txt" > "${work_dir}/sub.txt"
+    fi
+
+    sync_to_static_web "$work_dir"
+
+    local sub_port=$(get_or_create_sub_port)
+    local server_ip=$(get_server_ip)
+    local sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
+
+    clear
+    echo "=========================================================="
+    echo "       IPv6 Shadowsocks 直连节点共存部署成功！            "
+    echo "=========================================================="
+    echo "SS 节点链接:"
+    echo "$ss_link"
+    echo ""
+    echo "该节点已全自动合并并同步至你的固定订阅源中！"
+    echo "客户端直接点击【更新订阅】即可自动加载 IPv6 SS 节点："
+    echo "订阅地址: ${sub_online_url}"
+    echo "=========================================================="
+    echo ""
+    read -p "按回车键返回主菜单..."
 }
 
 function installtunnel(){
@@ -899,6 +1081,7 @@ echo "1.梭哈模式 (自动生成 VLESS+Trojan 443 TLS 优选节点)"
 echo "2.安装服务 (自定义域名绑定固定隧道)"
 echo "3.卸载服务"
 echo "4.清空缓存"
+echo "5.额外增加ipv6 ss 共存部署"
 echo -e "0.退出脚本\n"
 read -p "请选择模式(默认1):" mode
 if [ -z "$mode" ]
@@ -995,6 +1178,9 @@ then
     fi
     pkill -f "http.server" >/dev/null 2>&1
     rm -rf xray cloudflared-linux v2ray.txt nodes.txt sub.txt clash.yaml quick_tunnel.yaml
+elif [ $mode == 5 ]
+then
+    install_ipv6_ss
 else
     echo "退出成功"
     exit
