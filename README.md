@@ -1,6 +1,6 @@
 # New-Suoha: Cloudflare Argo + Xray 一键全自动脚本
 
-轻量、极速、开箱即用的多协议隧道穿透脚本。支持在主流 Linux 系统的 VPS 上一键并发部署 **VLESS-WS** 与 **Trojan-WS** 节点，通过 Cloudflare Argo 隧道实现穿透免开端口，同时矩阵式输出多组优选 CDN 域名与 443 TLS 节点，并由本地内置 HTTP 服务提供全自动化订阅及主流客户端导入配置。
+轻量、极速、开箱即用的多协议隧道穿透脚本。支持在主流 Linux 系统的 VPS 上一键并发部署 **VLESS-WS** 与 **Trojan-WS** 节点，通过 Cloudflare Argo 隧道实现穿透免开端口，同时矩阵式输出多组优选 CDN 域名与 443 TLS 节点。内置**永久固定订阅端口**服务与 **IPv6 Shadowsocks 直连共存**能力，支持订阅无缝更新及主流客户端一键导入。
 
 ---
 
@@ -16,23 +16,24 @@
 
 ## 核心特性
 
-* **多系统支持**：原生适配 Debian、Ubuntu、CentOS、Fedora 及 Alpine Linux。
-* **免提供域名**：默认提供 **梭哈模式 (Quick Tunnel)**，无需自有域名和证书，自动生成临时 `*.trycloudflare.com` 域名打通隧道。
-* **固定隧道模式**：提供 **安装服务模式 (Named Tunnel)**，支持绑定托管在 Cloudflare 上的自定义二级域名，并注册 Systemd / OpenRC 开机常驻自启。
-* **双协议并发**：单次部署同时启动 VLESS-WS 与 Trojan-WS 协议，由 Xray 内部 path/fallback 机制分流，无冗余进程与端口冲突。
-* **矩阵式优选节点**：
-* 自动为每个协议生成 **3 组优选域名**节点：
+* **多架构与多系统适配**：原生支持 `x86_64`、`arm64`、`armv7l`、`i386` 架构；全面适配 Debian、Ubuntu、CentOS、Fedora 及 Alpine Linux。
+* **无需自有域名**：默认提供 **梭哈模式 (Quick Tunnel)**，无需自有域名和证书，自动生成临时 `*.trycloudflare.com` 域名打通隧道。
+* **支持固定隧道托管**：提供 **安装服务模式 (Named Tunnel)**，支持绑定托管在 Cloudflare 上的自定义二级域名，并注册 Systemd / OpenRC 开机常驻自启。
+* **双协议原生并发**：单次部署同时启动 VLESS-WS 与 Trojan-WS 协议，各分配原生监听与独立 Quick Tunnel 隧道，无协议握手断流问题。
+* **IPv6 Shadowsocks 共存**：支持一键追加部署 IPv6 SS 直连节点（AES-128-GCM 加密），与原有 Argo 隧道节点完全共存且自动合并至订阅源。
+* **矩阵式 443 TLS 优选节点**：
+* 自动为每个协议矩阵生成 **3 组优选域名**节点：
 * `默认 Argo 域名`
 * `cf.090227.xyz`
 * `cloudflare.182682.xyz`
 
 
-* 纯粹聚焦 **443 TLS** 标准节点，移除 80 端口无证书节点，保障链路加密与 CDN 握手稳定性。
+* 纯粹聚焦 **443 TLS** 标准节点，移除 80 端口明文节点，保障链路加密与 CDN 握手稳定性。
 
 
-* **本地极速订阅源**：
-* 自动测算 VPS 外网真实 IP 并拉起微型 HTTP 订阅服务。
-* 直接生成通用 Base64 订阅链接、`v2rayN / NekoBox` 专用 `sub://` 协议导入链接、以及可供 `Clash / Mihomo` 一键拉取的完整策略组配置。
+* **永久固定订阅端口（免重复导入）**：
+* 首次运行自动分配并持久化记录订阅端口（存储于 `/etc/suoha_sub_port`）；
+* 静态订阅文件集中托管于 `/var/www/suoha_sub/`，重新梭哈或重启服务器后，**客户端无需重新导入链接，直接点击“更新订阅”即可自动刷新最新节点**。
 
 
 
@@ -40,7 +41,7 @@
 
 ## 一键运行命令
 
-登录 VPS 终端（支持 root 用户），复制并执行以下命令即可启动交互菜单：
+登录 VPS 终端（支持 root 用户），执行以下命令即可启动交互菜单：
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh)"
@@ -56,65 +57,86 @@ bash -c "$(wget -qO- https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/ref
 
 ---
 
-## 使用指南
+## 交互菜单说明
+
+```text
+1. 梭哈模式 (自动生成 VLESS+Trojan 443 TLS 优选节点)
+2. 安装服务 (自定义域名绑定固定隧道)
+3. 卸载服务
+4. 清空缓存
+5. 额外增加ipv6 ss 共存部署
+0. 退出脚本
+
+```
 
 ### 1. 梭哈模式 (推荐快速使用)
 
-运行脚本后选择 `1`（或一路直接回车）：
+运行脚本选择 `1`（或直接按回车）：
 
-1. 输入 Argo 连接网络类型（`4` 代表 IPv4，`6` 代表 IPv6，默认 `4`）。
-2. 脚本自动下载并拉起对应架构的 `xray-core` 与 `cloudflared`。
-3. 自动监听本地回环端口并打通 Cloudflare Quick Tunnel。
-4. 终端直接打印：
-* 全部 VLESS 与 Trojan 的 443 TLS 优选节点链接；
-* 本地托管的 Base64 订阅链接；
-* Clash / Clash.Meta / Mihomo 一键导入链接；
-* 包含代理组与分流规则的完整 `clash.yaml` 本地直链。
+1. 选择 Argo 连接网络模式（输入 `4` 为 IPv4，`6` 为 IPv6，默认 `4`）。
+2. 脚本自动拉取对应架构的 `Xray-core` 与 `cloudflared`。
+3. 双实例分别建立 VLESS-WS 与 Trojan-WS 的专属临时隧道。
+4. 自动生成多组 443 TLS 节点，并由本地 Python HTTP 服务在固定端口提供订阅服务。
 
+### 2. 安装服务模式 (长期稳定托管)
 
-
-> **提示**：梭哈模式生成的 Quick Tunnel 为临时隧道，VPS 重启或重新执行脚本时会自动刷新。
-
----
-
-### 2. 安装服务模式 (长期托管)
-
-如果拥有在 Cloudflare 托管的域名，并希望建立固定隧道：
+如果拥有在 Cloudflare 托管的自有域名：
 
 1. 运行脚本选择 `2`。
-2. 按照终端给出的 Cloudflare 登录链接在浏览器中授权域名。
-3. 输入想要绑定的完整二级域名（例如 `sub.yourdomain.com`）。
-4. 脚本将自动在云端注册 Named Tunnel 并完成 DNS 路由解析，同时将服务写入 Systemd（或 Alpine OpenRC）实现开机自启。
-5. 服务安装完成后，随时在终端输入命令 `suoha` 即可呼出管理面板，进行启动、停止、重启、查看订阅或卸载操作。
+2. 复制控制台生成的 Cloudflare 授权链接在浏览器完成授权。
+3. 输入想要绑定的二级域名（如 `sub.example.com`）。
+4. 脚本自动创建命名隧道（Named Tunnel）并配置 DNS 路由解析，同时注册系统服务开机自启。
+5. 后续直接在终端输入 `suoha` 即可随时呼出管理面板。
+
+### 3. 额外增加 IPv6 SS 共存部署
+
+在已运行【梭哈模式】或【安装服务】的前提下：
+
+1. 运行脚本选择 `5`。
+2. 脚本自动检测外网公网 IPv6 地址。
+3. 在 Xray 中注入监听 `::` 的 Shadowsocks 入站，精准重载 Xray 进程，不影响现有 Argo 隧道。
+4. 自动生成 `ss://` 直连链接，并追加合并至现有订阅文件，客户端直接刷新订阅即可同步获取。
 
 ---
 
 ## 节点与订阅导入说明
 
-| 导入目标 | 说明 | 示例格式 / 文件 |
+| 导入目标 | 说明 | 示例格式 / 路径 |
 | --- | --- | --- |
-| **v2rayN / NekoBox / Shadowrocket** | 复制终端输出的通用订阅 URL 直接粘贴添加订阅 | `http://<VPS_IP>:<端口>/sub.txt` |
-| **快速调起客户端** | 复制并导入 `sub://` 深度链接 | `sub://http://<VPS_IP>:<端口>/sub.txt` |
-| **Clash / Mihomo 一键配置** | 点击或导入配置链接直接拉取代理策略组 | `clash://install-config?url=http://<VPS_IP>:<端口>/clash.yaml` |
-| **单节点导入** | 手动导入单条节点链接 | `vless://...` 或 `trojan://...` |
+| **通用订阅 (v2rayN / NekoBox / Shadowrocket)** | 复制输出的通用订阅 URL 直接粘贴添加订阅 | `http://<VPS_IP>:<固定端口>/sub.txt` |
+| **应用协议快速导入** | 复制并导入 `sub://` 深度链接快速调起客户端 | `sub://http://<VPS_IP>:<固定端口>/sub.txt` |
+| **Clash / Mihomo 一键配置** | 点击或导入配置链接直接拉取代理策略组 | `clash://install-config?url=http://<VPS_IP>:<固定端口>/clash.yaml` |
+| **Clash 原始配置文件直链** | 浏览器直接下载或作为远程配置链接输入 | `http://<VPS_IP>:<固定端口>/clash.yaml` |
+| **单节点手动导入** | 支持独立复制导入 | `vless://...`、`trojan://...`、`ss://...` |
 
-### 本地文件结构
+### 本地持久化文件结构
 
-* 节点文本列表：`/opt/suoha/nodes.txt`（梭哈模式在当前工作目录）
-* Base64 订阅源：`/opt/suoha/sub.txt`
-* Clash 完整配置：`/opt/suoha/clash.yaml`
-* 汇总终端报告：`/opt/suoha/v2ray.txt`
+* **持久订阅目录**：`/var/www/suoha_sub/`
+* `nodes.txt`：当前所有可用节点的明文连接串
+* `sub.txt`：Base64 编码的通用客户端订阅源
+* `clash.yaml`：适用于 Clash/Mihomo 的完整策略组配置文件
+
+
+* **固定订阅端口记录**：`/etc/suoha_sub_port`
+* **运行主目录**：
+* 梭哈模式：`/opt/suoha_quick/`
+* 安装服务模式：`/opt/suoha/`
+
+
 
 ---
 
 ## 卸载与清理
 
-若需完全移除脚本运行环境及生成的服务：
+* 运行脚本选择 `3. 卸载服务`，脚本将自动：
+* 停止并清理 Xray、cloudflared 及后台内置 HTTP 订阅服务进程；
+* 移除 systemd 单元文件（或 Alpine OpenRC 脚本）；
+* 清理 `/opt/suoha`、`/opt/suoha_quick`、`/var/www/suoha_sub` 及全局命令软链接 `suoha`。
 
-* 重新运行脚本，在主菜单选择 `3. 卸载服务` 即可全自动停止进程、清除 Systemd 单元文件、清理本地配置文件及内置 HTTP 端口服务。
+
 
 ---
 
 ## 免责声明
 
-本脚本仅供技术研究、网络协议分析及个人测试使用。请遵守当地法律法规，严禁将本项目用于任何违反网络安全及法律规定的用途。
+本脚本仅供技术研究、网络运维测试及协议学习使用。使用者请严格遵守当地法律法规，切勿用于任何违反法律或危害网络安全的行为。
