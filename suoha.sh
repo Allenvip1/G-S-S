@@ -114,9 +114,23 @@ function sync_to_static_web(){
 }
 
 function quicktunnel(){
-# 记录快速模式安装绝对路径
 mkdir -p /opt/suoha_quick >/dev/null 2>&1
 cd /opt/suoha_quick
+
+# 精确清理旧的后台快速模式进程，严禁使用盲目匹配
+if [ -f "/opt/suoha_quick/xray.pid" ]; then
+    kill -9 $(cat /opt/suoha_quick/xray.pid) >/dev/null 2>&1
+    rm -f /opt/suoha_quick/xray.pid
+fi
+if [ -f "/opt/suoha_quick/cf_vl.pid" ]; then
+    kill -9 $(cat /opt/suoha_quick/cf_vl.pid) >/dev/null 2>&1
+    rm -f /opt/suoha_quick/cf_vl.pid
+fi
+if [ -f "/opt/suoha_quick/cf_tr.pid" ]; then
+    kill -9 $(cat /opt/suoha_quick/cf_tr.pid) >/dev/null 2>&1
+    rm -f /opt/suoha_quick/cf_tr.pid
+fi
+
 rm -rf xray cloudflared-linux xray.zip
 
 case "$(uname -m)" in
@@ -158,6 +172,7 @@ cat>xray/config.json<<EOF
 {
     "inbounds": [
         {
+            "tag": "vless-in",
             "port": $port_vless,
             "listen": "127.0.0.1",
             "protocol": "vless",
@@ -177,6 +192,7 @@ cat>xray/config.json<<EOF
             }
         },
         {
+            "tag": "trojan-in",
             "port": $port_trojan,
             "listen": "127.0.0.1",
             "protocol": "trojan",
@@ -204,11 +220,17 @@ cat>xray/config.json<<EOF
 }
 EOF
 
-# 使用绝对路径启动 Xray
+# 精确记录 Xray PID
 /opt/suoha_quick/xray/xray run -config /opt/suoha_quick/xray/config.json >/dev/null 2>&1 &
+echo $! > /opt/suoha_quick/xray.pid
 
-./cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
-./cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
+# 精确记录 cloudflared 实例 PID
+/opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
+echo $! > /opt/suoha_quick/cf_vl.pid
+
+/opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
+echo $! > /opt/suoha_quick/cf_tr.pid
+
 sleep 2
 
 n=0
@@ -223,17 +245,15 @@ argo_tr=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" argo_trojan.log 
 if [ $n == 20 ]
 then
     n=0
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-    else
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-    fi
+    [ -f "/opt/suoha_quick/cf_vl.pid" ] && kill -9 $(cat /opt/suoha_quick/cf_vl.pid) >/dev/null 2>&1
+    [ -f "/opt/suoha_quick/cf_tr.pid" ] && kill -9 $(cat /opt/suoha_quick/cf_tr.pid) >/dev/null 2>&1
     rm -rf argo_vless.log argo_trojan.log
     clear
     echo "argo 获取超时，正在重新尝试建立双隧道..."
-    ./cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
-    ./cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
+    /opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
+    echo $! > /opt/suoha_quick/cf_vl.pid
+    /opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
+    echo $! > /opt/suoha_quick/cf_tr.pid
     sleep 2
 elif [[ -z "$argo_vl" || -z "$argo_tr" ]]
 then
@@ -399,29 +419,25 @@ function install_ipv6_ss(){
 
     echo "检测到公网 IPv6: $ipv6_addr"
 
-    # 准确定位主运行路径
     local xray_dir=""
     local is_installed_mode=0
+    local cfg_json=""
+    local xray_bin=""
+
     if [ -f "/opt/suoha/config.json" ]; then
         xray_dir="/opt/suoha"
         is_installed_mode=1
+        cfg_json="/opt/suoha/config.json"
+        xray_bin="/opt/suoha/xray"
     elif [ -f "/opt/suoha_quick/xray/config.json" ]; then
         xray_dir="/opt/suoha_quick"
         is_installed_mode=0
+        cfg_json="/opt/suoha_quick/xray/config.json"
+        xray_bin="/opt/suoha_quick/xray/xray"
     else
         echo "未检测到正在运行的 Xray 服务，请先执行【1.梭哈模式】或【2.安装服务】！"
         read -p "按回车键返回主菜单..."
         return
-    fi
-
-    local cfg_json=""
-    local xray_bin=""
-    if [ $is_installed_mode -eq 1 ]; then
-        cfg_json="/opt/suoha/config.json"
-        xray_bin="/opt/suoha/xray"
-    else
-        cfg_json="/opt/suoha_quick/xray/config.json"
-        xray_bin="/opt/suoha_quick/xray/xray"
     fi
 
     local ss_port=$[$RANDOM%10000+30000]
@@ -430,54 +446,60 @@ function install_ipv6_ss(){
 
     echo "正在注入 IPv6 Shadowsocks 节点 (端口: $ss_port, 加密: $ss_method)..."
 
-    python3 - <<EOF
+    # 使用 Python 安全操作 JSON，杜绝写入截断
+    python3 -c "
 import json, sys
 
-cfg_file = "$cfg_json"
+cfg_file = '$cfg_json'
 try:
-    with open(cfg_file, 'r') as f:
+    with open(cfg_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    # 移除历史可能存在的同类 ss-inbound
+    # 移除已有的 ss-ipv6，保留原本的所有 vless 和 trojan 入站
     data['inbounds'] = [ib for ib in data.get('inbounds', []) if ib.get('tag') != 'ss-ipv6']
     
     ss_ib = {
-        "tag": "ss-ipv6",
-        "port": int("$ss_port"),
-        "listen": "::",
-        "protocol": "shadowsocks",
-        "settings": {
-            "method": "$ss_method",
-            "password": "$ss_password",
-            "network": "tcp,udp"
+        'tag': 'ss-ipv6',
+        'port': int('$ss_port'),
+        'listen': '::',
+        'protocol': 'shadowsocks',
+        'settings': {
+            'method': '$ss_method',
+            'password': '$ss_password',
+            'network': 'tcp,udp'
         }
     }
     data['inbounds'].append(ss_ib)
     
-    with open(cfg_file, 'w') as f:
-        json.dump(data, f, indent=4)
+    with open(cfg_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 except Exception as e:
     sys.exit(1)
-EOF
-
+"
     if [ $? -ne 0 ]; then
         echo "注入 Xray 配置失败，请检查 python3 环境！"
         read -p "按回车键返回主菜单..."
         return
     fi
 
-    # 重启 Xray（保证不碰 cloudflared 隧道）
+    # 只精准重启 Xray 进程，严禁使用盲目 pkill，防止杀掉正在连接的 cloudflared 隧道
     if [ $is_installed_mode -eq 1 ]; then
         if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
         then
-            pkill -f "$xray_bin" >/dev/null 2>&1
             /etc/local.d/xray.start >/dev/null 2>&1
         else
             systemctl restart xray.service >/dev/null 2>&1
         fi
     else
-        pkill -f "$xray_bin" >/dev/null 2>&1
-        $xray_bin run -config $cfg_json >/dev/null 2>&1 &
+        # 针对梭哈模式，只精准击杀记录的 xray PID，绝不触碰 cloudflared
+        if [ -f "/opt/suoha_quick/xray.pid" ]; then
+            kill -9 $(cat /opt/suoha_quick/xray.pid) >/dev/null 2>&1
+            rm -f /opt/suoha_quick/xray.pid
+        else
+            kill -9 $(pgrep -f "/opt/suoha_quick/xray/xray") >/dev/null 2>&1
+        fi
+        nohup $xray_bin run -config $cfg_json >/dev/null 2>&1 &
+        echo $! > /opt/suoha_quick/xray.pid
     fi
 
     local ss_user_info="${ss_method}:${ss_password}"
@@ -490,61 +512,58 @@ EOF
     fi
     local ss_link="ss://${ss_base64}@[${ipv6_addr}]:${ss_port}#IPv6-SS-Direct"
 
-    # 读取原有节点并去重追加，严禁覆盖丢失原有 Argo 优选节点
+    # 读取旧 nodes.txt，去除旧 SS 节点后安全追加，绝不破坏原有节点
     local work_nodes="${xray_dir}/nodes.txt"
     touch "$work_nodes"
     sed -i '/IPv6-SS-Direct/d' "$work_nodes"
     echo "$ss_link" >> "$work_nodes"
 
-    # 同步追加到 clash.yaml
+    # 追加到 clash.yaml
     local clash_file="${xray_dir}/clash.yaml"
     if [ -f "$clash_file" ]; then
-        python3 - <<EOF
-import sys
-
-yaml_file = "$clash_file"
+        python3 -c "
+yaml_file = '$clash_file'
 try:
-    with open(yaml_file, 'r') as f:
+    with open(yaml_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     
-    # 过滤可能已经存在的旧节点
     filtered = []
     skip = False
     for l in lines:
-        if 'name: "IPv6-SS-Direct"' in l:
+        if 'name: \"IPv6-SS-Direct\"' in l:
             skip = True
             continue
-        if skip and l.startswith("  - name:"):
+        if skip and l.startswith('  - name:'):
             skip = False
-        if not skip and '      - "IPv6-SS-Direct"' not in l:
+        if not skip and '      - \"IPv6-SS-Direct\"' not in l:
             filtered.append(l)
     
     new_lines = []
     proxy_inserted = False
     group_inserted = False
     for line in filtered:
-        if line.strip().startswith("proxy-groups:") and not proxy_inserted:
-            new_lines.append("  - name: \"IPv6-SS-Direct\"\n")
-            new_lines.append("    type: ss\n")
-            new_lines.append("    server: \"${ipv6_addr}\"\n")
-            new_lines.append("    port: ${ss_port}\n")
-            new_lines.append("    cipher: ${ss_method}\n")
-            new_lines.append("    password: \"${ss_password}\"\n")
-            new_lines.append("    udp: true\n")
+        if line.strip().startswith('proxy-groups:') and not proxy_inserted:
+            new_lines.append('  - name: \"IPv6-SS-Direct\"\n')
+            new_lines.append('    type: ss\n')
+            new_lines.append('    server: \"${ipv6_addr}\"\n')
+            new_lines.append('    port: ${ss_port}\n')
+            new_lines.append('    cipher: ${ss_method}\n')
+            new_lines.append('    password: \"${ss_password}\"\n')
+            new_lines.append('    udp: true\n')
             proxy_inserted = True
-        if line.strip().startswith("rules:") and not group_inserted:
-            new_lines.append("      - \"IPv6-SS-Direct\"\n")
+        if line.strip().startswith('rules:') and not group_inserted:
+            new_lines.append('      - \"IPv6-SS-Direct\"\n')
             group_inserted = True
         new_lines.append(line)
     
-    with open(yaml_file, 'w') as f:
+    with open(yaml_file, 'w', encoding='utf-8') as f:
         f.writelines(new_lines)
 except Exception:
     pass
-EOF
+"
     fi
 
-    # 重新生成 Base64 订阅并同步到静态持久目录
+    # 重新生成 Base64 订阅并同步
     if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
     then
         base64 "$work_nodes" | tr -d '\n' > "${xray_dir}/sub.txt"
@@ -565,7 +584,7 @@ EOF
     echo "SS 直连链接:"
     echo "$ss_link"
     echo ""
-    echo "原 Argo 隧道和节点依然在线，该节点已自动追加进持久订阅！"
+    echo "原 Argo 临时隧道依然持续运行，所有节点完好无损！"
     echo "客户端直接点击【更新订阅】即可同步获取全部节点："
     echo "订阅地址: ${sub_online_url}"
     echo "=========================================================="
@@ -617,6 +636,7 @@ cat>/opt/suoha/config.json<<EOF
 {
     "inbounds": [
         {
+            "tag": "vless-in",
             "port": $port_vless,
             "listen": "127.0.0.1",
             "protocol": "vless",
@@ -636,6 +656,7 @@ cat>/opt/suoha/config.json<<EOF
             }
         },
         {
+            "tag": "trojan-in",
             "port": $port_trojan,
             "listen": "127.0.0.1",
             "protocol": "trojan",
