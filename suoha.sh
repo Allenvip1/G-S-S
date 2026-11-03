@@ -1229,6 +1229,8 @@ echo "3.卸载服务"
 echo "4.清空缓存"
 echo "5.部署ipv6 ss (可单独安装,无需先选1或2)"
 echo -e "0.退出脚本\n"
+# 清掉终端里残留的回车(部分SSH客户端回车会发送 \r\n),避免菜单被自动跳过
+while read -r -t 0.1 -n 1 _discard 2>/dev/null; do :; done
 read -p "请选择模式(默认1):" mode
 if [ -z "$mode" ]
 then
