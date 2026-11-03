@@ -405,6 +405,79 @@ cat v2ray.txt
 echo -e "\n信息已经保存在 /opt/suoha_quick/v2ray.txt,再次查看请运行 cat /opt/suoha_quick/v2ray.txt"
 }
 
+function setup_standalone_ss(){
+    local dir="/opt/suoha_ss"
+    local zip_url=""
+    mkdir -p "$dir" >/dev/null 2>&1
+
+    if [ ! -x "$dir/xray" ]; then
+        case "$(uname -m)" in
+            x86_64 | x64 | amd64 ) zip_url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" ;;
+            i386 | i686 ) zip_url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-32.zip" ;;
+            armv8 | arm64 | aarch64 ) zip_url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip" ;;
+            armv7l ) zip_url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip" ;;
+            * )
+                echo "当前架构$(uname -m)没有适配"
+                return 1
+                ;;
+        esac
+        rm -rf "$dir/xray_tmp" "$dir/xray.zip"
+        if ! curl -L "$zip_url" -o "$dir/xray.zip" || ! unzip -o -d "$dir/xray_tmp" "$dir/xray.zip" >/dev/null 2>&1; then
+            echo "下载或解压 Xray 失败！"
+            rm -rf "$dir/xray_tmp" "$dir/xray.zip"
+            return 1
+        fi
+        mv -f "$dir/xray_tmp/xray" "$dir/xray"
+        chmod +x "$dir/xray"
+        rm -rf "$dir/xray_tmp" "$dir/xray.zip"
+    fi
+
+    if [ ! -f "$dir/config.json" ]; then
+        cat > "$dir/config.json" <<EOF
+{
+    "inbounds": [],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "settings": {}
+        }
+    ]
+}
+EOF
+    fi
+
+    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+    then
+        cat > /etc/local.d/xray-ss.start <<EOF
+#!/bin/sh
+if [ -f $dir/xray.pid ]; then
+    kill \$(cat $dir/xray.pid) >/dev/null 2>&1
+fi
+nohup $dir/xray run -config $dir/config.json >/dev/null 2>&1 &
+echo \$! > $dir/xray.pid
+EOF
+        chmod +x /etc/local.d/xray-ss.start
+        rc-update add local >/dev/null 2>&1
+    else
+        cat > /lib/systemd/system/xray-ss.service <<EOF
+[Unit]
+Description=Xray IPv6 SS (suoha)
+After=network.target
+
+[Service]
+ExecStart=$dir/xray run -config $dir/config.json
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl --system daemon-reload
+        systemctl enable xray-ss.service >/dev/null 2>&1
+    fi
+    return 0
+}
+
 function install_ipv6_ss(){
     clear
     echo "正在检测机器公网 IPv6 地址..."
@@ -435,9 +508,16 @@ function install_ipv6_ss(){
         cfg_json="/opt/suoha_quick/xray/config.json"
         xray_bin="/opt/suoha_quick/xray/xray"
     else
-        echo "未检测到正在运行的 Xray 服务，请先执行【1.梭哈模式】或【2.安装服务】！"
-        read -p "按回车键返回主菜单..."
-        return
+        # 未安装梭哈/安装服务模式时，独立部署一个只含 SS 的 Xray
+        echo "未检测到梭哈/安装服务模式，将独立部署 IPv6 SS (不依赖 Argo 隧道)..."
+        if ! setup_standalone_ss; then
+            read -p "按回车键返回主菜单..."
+            return
+        fi
+        xray_dir="/opt/suoha_ss"
+        is_installed_mode=2
+        cfg_json="/opt/suoha_ss/config.json"
+        xray_bin="/opt/suoha_ss/xray"
     fi
 
     local ss_port=$[$RANDOM%10000+30000]
@@ -483,7 +563,14 @@ except Exception as e:
     fi
 
     # 只精准重启 Xray 进程，严禁使用盲目 pkill，防止杀掉正在连接的 cloudflared 隧道
-    if [ $is_installed_mode -eq 1 ]; then
+    if [ $is_installed_mode -eq 2 ]; then
+        if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+        then
+            /etc/local.d/xray-ss.start >/dev/null 2>&1
+        else
+            systemctl restart xray-ss.service >/dev/null 2>&1
+        fi
+    elif [ $is_installed_mode -eq 1 ]; then
         if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
         then
             /etc/local.d/xray.start >/dev/null 2>&1
@@ -577,14 +664,26 @@ except Exception:
     local server_ip=$(get_server_ip)
     local sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
 
+    if [ $is_installed_mode -eq 2 ]; then
+        start_sub_server /var/www/suoha_sub "$sub_port"
+    fi
+
     clear
     echo "=========================================================="
-    echo "       IPv6 Shadowsocks 直连节点共存部署成功！            "
+    if [ $is_installed_mode -eq 2 ]; then
+        echo "          IPv6 Shadowsocks 独立部署成功！                 "
+    else
+        echo "       IPv6 Shadowsocks 直连节点共存部署成功！            "
+    fi
     echo "=========================================================="
     echo "SS 直连链接:"
     echo "$ss_link"
     echo ""
-    echo "原 Argo 临时隧道依然持续运行，所有节点完好无损！"
+    if [ $is_installed_mode -eq 2 ]; then
+        echo "已独立部署，不依赖 Argo 隧道。"
+    else
+        echo "原 Argo 隧道依然持续运行，所有节点完好无损！"
+    fi
     echo "客户端直接点击【更新订阅】即可同步获取全部节点："
     echo "订阅地址: ${sub_online_url}"
     echo "=========================================================="
@@ -1128,7 +1227,7 @@ echo "1.梭哈模式 (自动生成 VLESS+Trojan 443 TLS 优选节点)"
 echo "2.安装服务 (自定义域名绑定固定隧道)"
 echo "3.卸载服务"
 echo "4.清空缓存"
-echo "5.额外增加ipv6 ss 共存部署"
+echo "5.部署ipv6 ss (可单独安装,无需先选1或2)"
 echo -e "0.退出脚本\n"
 read -p "请选择模式(默认1):" mode
 if [ -z "$mode" ]
@@ -1195,16 +1294,18 @@ then
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
         pkill -f "http.server" >/dev/null 2>&1
-        rm -rf /opt/suoha /opt/suoha_quick /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha /etc/suoha_sub_port /var/www/suoha_sub
+        rm -rf /opt/suoha /opt/suoha_quick /opt/suoha_ss /etc/local.d/xray-ss.start /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha /etc/suoha_sub_port /var/www/suoha_sub
     else
         systemctl stop cloudflared.service
         systemctl stop xray.service
+        systemctl stop xray-ss.service >/dev/null 2>&1
         systemctl disable cloudflared.service
         systemctl disable xray.service
+        systemctl disable xray-ss.service >/dev/null 2>&1
         kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
         pkill -f "http.server" >/dev/null 2>&1
-        rm -rf /opt/suoha /opt/suoha_quick /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
+        rm -rf /opt/suoha /opt/suoha_quick /opt/suoha_ss /lib/systemd/system/xray-ss.service /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
         systemctl --system daemon-reload
     fi
     clear

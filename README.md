@@ -44,14 +44,14 @@
 登录 VPS 终端（支持 root 用户），执行以下命令即可启动交互菜单：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Allenvip1/G-S-S/refs/heads/main/suoha.sh)"
 
 ```
 
 如果系统未预装 `curl`，可使用 `wget` 代替：
 
 ```bash
-bash -c "$(wget -qO- https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh)"
+bash -c "$(wget -qO- https://raw.githubusercontent.com/Allenvip1/G-S-S/refs/heads/main/suoha.sh)"
 
 ```
 
