@@ -1214,6 +1214,58 @@ chmod +x /opt/suoha/suoha.sh
 ln -sf /opt/suoha/suoha.sh /usr/bin/suoha
 }
 
+function show_deployed_info(){
+    clear
+    local found=0
+    local d ss_line
+
+    if [ -f /opt/suoha/v2ray.txt ]; then
+        found=1
+        echo "================== 【安装服务模式】已部署信息 =================="
+        cat /opt/suoha/v2ray.txt
+        echo ""
+    fi
+    if [ -f /opt/suoha_quick/v2ray.txt ]; then
+        found=1
+        echo "================== 【梭哈模式】已部署信息 =================="
+        cat /opt/suoha_quick/v2ray.txt
+        if ! pgrep -f "/opt/suoha_quick/xray/xray" >/dev/null 2>&1; then
+            echo "[提示] 梭哈模式的 Xray 当前未在运行(重启后会失效),临时域名已不可用,需重新选择 1 创建"
+        fi
+        echo ""
+    fi
+
+    # IPv6 SS 节点(共存部署会写进对应目录的 nodes.txt,独立部署在 /opt/suoha_ss)
+    for d in /opt/suoha /opt/suoha_quick /opt/suoha_ss; do
+        if [ -f "$d/nodes.txt" ]; then
+            ss_line=$(grep "IPv6-SS-Direct" "$d/nodes.txt" 2>/dev/null)
+            if [ -n "$ss_line" ]; then
+                found=1
+                echo "================== IPv6 Shadowsocks 节点 ($d) =================="
+                echo "$ss_line"
+                echo ""
+            fi
+        fi
+    done
+
+    if [ $found -eq 0 ]; then
+        echo "未检测到任何已部署的信息,请先选择 1、2 或 5 进行部署。"
+        return
+    fi
+
+    if [ -f /etc/suoha_sub_port ]; then
+        local sub_port=$(cat /etc/suoha_sub_port | tr -d '\n\r ')
+        local server_ip=$(get_server_ip)
+        echo "================== 订阅地址 =================="
+        echo "Base64 订阅: http://${server_ip}:${sub_port}/sub.txt"
+        echo "Clash 配置:  http://${server_ip}:${sub_port}/clash.yaml"
+        echo "纯文本节点:  http://${server_ip}:${sub_port}/nodes.txt"
+        if ! pgrep -f "http.server $sub_port" >/dev/null 2>&1; then
+            echo "[提示] 订阅服务当前未在运行,上面的订阅地址暂时无法访问"
+        fi
+    fi
+}
+
 clear
 echo "梭哈模式不需要自己提供域名,使用CF ARGO QUICK TUNNEL创建快速链接"
 echo "梭哈模式在重启或者脚本再次运行后失效,如果需要使用需要再次运行创建"
@@ -1228,6 +1280,7 @@ echo "2.安装服务 (自定义域名绑定固定隧道)"
 echo "3.卸载服务"
 echo "4.清空缓存"
 echo "5.部署ipv6 ss (可单独安装,无需先选1或2)"
+echo "6.查看已部署的信息"
 echo -e "0.退出脚本\n"
 # 清掉终端里残留的回车(部分SSH客户端回车会发送 \r\n),避免菜单被自动跳过
 while read -r -t 0.1 -n 1 _discard 2>/dev/null; do :; done
@@ -1330,6 +1383,9 @@ then
 elif [ $mode == 5 ]
 then
     install_ipv6_ss
+elif [ $mode == 6 ]
+then
+    show_deployed_info
 else
     echo "退出成功"
     exit
